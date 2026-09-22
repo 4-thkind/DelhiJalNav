@@ -8,9 +8,6 @@
 records the evidence, and maps the damage — all without your video ever leaving the device.**
 
 `YOLOv8n` · `ONNX Runtime Web` · `WebGPU` · `TypeScript PWA` · `FastAPI` · `SQLite`
-
-*Built for Build with India / Bharat 2.0*
-
 </div>
 
 ---
@@ -219,10 +216,10 @@ flowchart TD
 | **Severity** | Is this worth interrupting for? | Minor blemishes on bad roads |
 | **Suppression** | Have I already said this? | Repetition, alert fatigue |
 
-> **The stage judges tend to ask about is #3.** A pothole at the kerb gets
+> **The stage people frequently ask about is #3.** A pothole at the kerb gets
 > detected, tracked and drawn on screen — and the system stays deliberately
 > silent, because it isn't in your path. Silence is a designed output, not an
-> absence of one. It's the most convincing thing to demo live.
+> absence of one. It's the most convincing thing to see live.
 
 ---
 
@@ -465,10 +462,10 @@ flowchart LR
 
 | Layer | Choice | Why this and not the obvious alternative |
 |---|---|---|
-| **App shell** | TypeScript PWA, no framework | Web gives camera, GPS, magnetometer, speech, `MediaRecorder` and GPU compute. Ships to a phone from a URL. React/Flutter would have spent the deadline on toolchain, not product. |
+| **App shell** | TypeScript PWA, no framework | Web gives camera, GPS, magnetometer, speech, `MediaRecorder` and GPU compute. Ships to a phone from a URL. React/Flutter would add unnecessary toolchain complexity without real gain. |
 | **Inference** | ONNX Runtime Web, WebGPU → WASM | WebGPU is several times faster on modern Android; WASM guarantees it runs anywhere. Same model binary for both. |
 | **Model** | YOLOv8n @ 416px | Latency *is* accuracy on a moving vehicle. See the note above. |
-| **Maps** | Leaflet + OpenStreetMap | Zero API keys, zero billing, no vendor signup between a judge and a working demo. |
+| **Maps** | Leaflet + OpenStreetMap | Zero API keys, zero billing, no vendor signup required to run. |
 | **Routing** | Nominatim + OSRM | Same reasoning. Public demo endpoints — fine for a prototype, explicitly not production. |
 | **Backend** | FastAPI + SQLite | One file, one process, no migrations. Spatial queries are a bounding box plus haversine, which is correct at city scale. |
 | **Distribution** | PWA → Trusted Web Activity | A real signed `.aab` Google Play accepts, with full camera and GPS access. |
@@ -480,7 +477,7 @@ answer:
 
 1. **Everything the safety loop needs, the web provides** — and it's all in use
    here, including GPU-accelerated neural inference and the magnetometer.
-2. **It installs from a URL**, which is worth an enormous amount during judging.
+2. **It installs directly from a URL**, making deployment and access instant.
 3. **The Play Store path is real**, not hypothetical — Trusted Web Activity is
    Google's own mechanism, and Bubblewrap is Google's own tool.
 4. **Nothing is throwaway if we do port.** The alert engine is dependency-free

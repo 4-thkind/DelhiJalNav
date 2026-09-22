@@ -21,7 +21,7 @@ wifi) open that URL, accept the self-signed-certificate warning
 > The certificate warning is only because `npm run dev` self-signs. It goes away
 > the moment the app is on a real host (step 2).
 
-## 2. For the demo video and the judges (10 minutes, a real URL)
+## 2. For a live demo and hosting (10 minutes, a real URL)
 
 Deploy once and everyone can open it, including on iPhones.
 
