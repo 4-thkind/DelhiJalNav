@@ -23,3 +23,8 @@ Thumbs.db
 .vscode/
 pathfinder_ar_specification.md
 docs/
+
+# presentations / office files
+PathFinder-AR KERNEL.pptx
+*.pptx
+
