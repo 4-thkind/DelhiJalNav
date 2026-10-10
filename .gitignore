@@ -28,3 +28,10 @@ docs/
 PathFinder-AR KERNEL.pptx
 *.pptx
 
+
+# secrets and local deploy config
+.env
+.env.*
+!.env.example
+backend/.aws-sam/
+samconfig.toml
