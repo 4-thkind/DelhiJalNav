@@ -8,8 +8,11 @@ export default defineConfig({
   server: {
     host: true,
     https: {},
-    // so `npm run dev` talks to the local backend without CORS or a base URL
-    proxy: { "/api": { target: "http://127.0.0.1:8000", changeOrigin: true } },
+    // so `npm run dev` talks to the local backends without CORS or a base URL
+    proxy: {
+      "/v1": { target: "http://127.0.0.1:8787", changeOrigin: true }, // backend/local_server.py
+      "/api": { target: "http://127.0.0.1:8000", changeOrigin: true }, // legacy pothole server
+    },
   },
   build: { target: "es2022" },
   // ort resolves its own wasm at runtime; prebundling breaks that resolution
