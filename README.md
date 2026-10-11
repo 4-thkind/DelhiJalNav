@@ -2,105 +2,272 @@
 
 **Recent water reports. Better route decisions.**
 
-DilliJalNav Edge helps a Delhi commuter decide whether to take their usual underpass route after local waterlogging reports. For one pilot corridor, it compares real road-following route candidates against recent community reports. If a route passes through a reported underpass, the app rejects it, shows the alternative and what it costs in time and distance, and explains why. When the evidence gets old, the app says it cannot confirm conditions. It never quietly turns the road green again.
+Every monsoon, Delhi's underpasses flood within an hour, and navigation apps still send riders straight into them. Maps know traffic. They don't know water. DilliJalNav Edge checks your route against fresh waterlogging reports from people on the ground, avoids the flooded underpass, tells you exactly what the detour costs, and explains why.
 
-Built for **Environmental Hacks (WeMakeDevs × AWS), Track 02: Heat and Water**. See [PROVENANCE.md](PROVENANCE.md) for what was inherited from the earlier PathFinder AR project and what was built during the event.
+![DilliJalNav Edge: route planner with a flood-checked route on the map and a live ride view approaching a waterlogged underpass](assets/dillijalnav-hero.jpg)
 
-## What it does today
+**Live on AWS:** https://d3vchw4bg3abh4.cloudfront.net (`aws-demo` mode, synthetic reports)
 
-- **Pilot corridor:** JLN Marg near Ajmeri Gate → Connaught Place. There are two real candidates, retrieved from OpenStreetMap/OSRM:
-  - **A**, through the Minto Bridge underpass: 1.7 km, about 3 min.
-  - **B**, via Shivaji Flyover and Barakhamba Road: 3.2 km, about 4 min.
-- **Structured reports:** water on the road, road blocked, no water seen, or not sure. Optional Hindi, English or Hinglish text, and a review step ("We understood: …") before anything is sent. Reports go into a durable IndexedDB outbox, so they survive reloads and offline periods. Retries reuse the same event ID.
-- **Evidence policy `flood-policy-v1`:** transparent rules instead of a confidence score.
+**Theme:** Track 02, Heat and Water. Climate change is making Delhi's monsoon rain shorter, heavier and harder to predict, and the city's drains were not built for it. DilliJalNav Edge works on the water side of that problem. It focuses on the moment when climate turns into an everyday safety risk for millions of two-wheeler riders, auto drivers and commuters.
 
-  | State | Meaning | Underpass in routes? |
-  |---|---|---|
-  | `UNKNOWN` | no fresh evidence; not the same as dry | allowed, with "no current reports" shown |
-  | `REPORTED` | one fresh positive source | avoided |
-  | `CORROBORATED` | at least two distinct sources agree | avoided |
-  | `CONFLICTED` | a newer "no water" report disagrees | avoided until reviewed |
-  | `STALE` | positive reports aged out (30 min) with no clear review | **still avoided** |
-  | `RECENTLY_CLEAR_REPORTED` | a reviewer accepted two newer "no water" reports from distinct sources | allowed; labelled as not official |
+---
 
-  Each source counts once. Retries never become extra witnesses: the same event ID with a different body is rejected with `409`. Freshness comes from `observedAt`, never from when an upload arrived.
-- **Route decision on the server:** geometry is tested in local metres, including a segment that crosses the hazard between two vertices. The response carries the selected and rejected routes, rejection reasons, extra time and distance, revisions and a `validUntil`. If no candidate is admissible, the app says so instead of drawing a reassuring line.
-- **Explicit modes:** every screen shows `Demo · synthetic reports`, `AWS demo · synthetic reports`, `Pilot · community reports` or `Offline · last synced …`. There is no hidden fallback to mock data.
-- **Map-first navigation UI** (`MAP_UI_SPECIFICATION.md`). It adapts to the screen:
-  - **phone:** bottom sheet;
-  - **laptop:** side panel;
-  - **car-size screens** (wide and short): dark HUD with 54 px targets.
+## Contents
 
-  The layout is picked automatically from the screen size; there is no toggle. The first run asks how you travel (two-wheeler rider, car/cab driver, auto driver, commuter, community reporter) and sets the vehicle from that.
-- **Start ride (camera + route):** the original PathFinder camera loop is back as the main ride screen. The camera is on top, with on-device YOLOv8n pothole detection, alerts and the dashcam. The flood-checked route is below, with turn guidance from real GPS, an off-route warning, and a spoken warning near a hotspot with reported water. If the camera is denied, the ride continues map-only. The camera needs HTTPS (use the Cloudflare tunnel on a phone).
+- [Why this exists](#why-this-exists)
+- [How it works in 30 seconds](#how-it-works-in-30-seconds)
+- [Features](#features)
+- [The evidence policy](#the-evidence-policy)
+- [Architecture](#architecture)
+- [How we use AWS](#how-we-use-aws)
+- [Request flows](#request-flows)
+- [On-device AI](#on-device-ai)
+- [Run it locally](#run-it-locally)
+- [Deploy to AWS](#deploy-to-aws)
+- [Tests](#tests)
+- [API](#api)
+- [Configuration](#configuration)
+- [Repository layout](#repository-layout)
+- [Limits and roadmap](#limits-and-roadmap)
 
-  It includes:
-  - a blue arrow-and-puck pointer with a heading beam and a street-name tag;
-  - a green guidance banner with a "Then …" chip, plus a tappable cue sheet of every maneuver from OSRM steps;
-  - lane glyphs, shown only where OpenStreetMap has lane data;
-  - a simulated drive, labelled as simulated;
-  - a re-center pill with a 7 s countdown;
-  - a cyan/red striped segment where a route crosses reported water.
-- **Reroute notice:** "Minto Bridge underpass bypassed", showing the state, the number of sources, the report age, the claimed depth and any claimed stalled vehicles. The user can **Accept bypass (+n min)** or **Keep original route**; keeping it shows an explicit warning. When the route changes, a spoken caution plays in Hindi or English.
-- **Vehicle selector** (bike / auto / car / SUV / EV): changes the advice wording. No vehicle is cleared through reported water. Depths are user claims, so an SUV does not get "direct transit".
-- **Tap-anywhere routing** within 8 km of the pilot underpass, server-side. With `GOOGLE_MAPS_API_KEY` set it uses the **Google Routes API**: traffic-aware ETAs, real **two-wheeler mode** for riders, and up to 3 alternatives. With no key, or on any Google failure, it falls back to the public OSRM API. If the fastest route crosses a restricted hotspot, the server re-requests the route through the hotspot's bypass anchor (Shivaji Flyover / Barakhamba Road) as a via-waypoint. It then **validates the detour geometry** like any other candidate. A waypoint alone never proves avoidance. In Hindi, turn instructions come back in Hindi.
-- **Google Maps** (`app/src/map/mapview.ts`): with `VITE_GOOGLE_MAPS_KEY` set, both maps use the Maps JavaScript API with palette-styled tiles (beige by day, a dark green HUD on the ride screen). With no key, offline, or if Google rejects the key, the same drawing code runs on Leaflet + OpenStreetMap.
-- **Camera-triggered reroute:** when the camera's water cue fires during a ride, the app asks the server for a route around the water, starting from where the rider is now (`avoid` in `POST /v1/routes/compare`). If the water is inside a known basin, the whole basin is avoided (for example Minto Bridge, which switches to the Shivaji Flyover bypass). Elsewhere, only roads within 30 m of the water are avoided. The change is **only for that rider, for 20 minutes**, and is never stored as evidence: a heuristic must not reroute other people. The demo build has a "Demo: camera sees water at the underpass" button that shows this without real water.
-- **Pothole depth estimate** (`app/src/potholeDepth.ts`), in **metres**: flat-road geometry gives the pothole's size on the ground. Darkness and smoothness inside the box, compared with the asphalt around it, give how sunken it looks. The result is "~0.12 m deep est." in three tiers: below 0.03 m is logged only, 0.03 to 0.06 m gets a warning, above 0.06 m gets an urgent alert and a saved dashcam clip. It is a heuristic and **not calibrated** against measured potholes; the overlay says "est.".
-- **Third-person ride map:** during a ride the map tilts 60° (Google vector map with 3D buildings, tinted to the palette) and turns heading-up. A rider avatar seen from behind glides between GPS fixes. Heading comes from the GPS course while moving, otherwise the route direction, otherwise the compass. Without WebGL, the same follow camera runs on a flat map. If location is off or blocked, the ride screen says so and explains how to turn it on, instead of showing a frozen map.
-- **Map tags:** a swirling **spiral** stands on every underpass with reported water (solid rim) and wherever the camera saw possible water (dashed rim). A floating **ping** marks every pothole the camera logged; it shows the estimated depth and stays on the phone for later rides. The camera view uses the same spiral and ping tags.
-- **Two ride modes** (pill in the top bar):
-  - **Camera:** the phone is on the handlebar; the camera is on and analysed as above.
-  - **Pocket:** the camera is never opened and the screen is black (saves AMOLED battery). It gives voice turn-by-turn plus spoken warnings near hotspots with reported water. The browser still needs the screen on for GPS; a web app cannot track in the background.
-- **Speed-adaptive dashcam** (`app/src/dashcam.ts`): frames are recorded at 2 fps when stopped, 10 fps below 25 km/h, 20 fps when cruising, and 30 fps for 10 s around a hazard. Time, speed and position are burned in. Footage stays in memory unless a clip is saved. Deep potholes and camera water save a clip automatically.
-- **Bilingual voice:** ride alerts and turn-by-turn in English or Hindi (Devanagari for the voice; phonetic Hinglish kept in `i18n.ts` for review).
-- **Hinglish report drafts** (`POST /v1/report-drafts`):
-  - Amazon Bedrock extracts the place, water / negation, time reference and the claimed depth.
-  - The model ID is configurable. A 2 s timeout acts as a circuit breaker, falling back to deterministic keyword rules, so the user never sees a 500.
-  - Output is checked against an allowlist of 5 Delhi sites, and the place and depth words must actually appear in the text.
-  - Voice input uses the browser's speech recognition where it is available.
-  - The draft is always reviewed by the user ("We understood …") before anything is sent.
-- **Depth and stalled-vehicle claims:** an Ankle / Knee / Waist / Submerged scale and a stalled-vehicle count. Both are shown as *claims*, never as measurements.
-- **Weather context:** Open-Meteo model rainfall near the corridor, shown as a chip, with an advisory when heavy rain is forecast. Rain never confirms or clears waterlogging.
-- **Share trip** (Web Share, falling back to WhatsApp) and **SOS** (112, Delhi Traffic Police 1095, Delhi Jal Board 1916; verify these locally).
-- The camera runs **two models on the phone**:
-  - **Potholes:** a YOLOv8n detector.
-  - **Water:** a **SegFormer-b0 segmentation model** that labels every pixel. The water, sea, river and lake classes count as water. About once a second it measures how much of the road ahead is water. Two of three runs at 15 % or more trigger a warning, a dashcam clip and the personal reroute.
-  - **Results on real photos:** 6 of 7 outdoor flooded streets read 17–94 % water, and 6 dry Delhi roads read 0 %.
-  - **Test a photo** in Settings runs both models on any picture.
+---
 
-  The water model is not trained on Delhi monsoon footage, so the app says "possible water" and never files a report by itself (`app/src/water.ts`, `app/src/waterModel.ts`, checked by `app/src/water.check.ts`).
-- **Natural voice:** alerts and turns are spoken by neural voices (en-IN, hi-IN) from the Python `edge-tts` library through `GET /v1/tts`. Phrases are prefetched when a ride starts. If the audio is not ready within 1.2 s, or the phone is offline, the phone's built-in voice speaks instead, so a warning is never late.
-- **Route dock:** the planner panel is a bottom-left dock with smooth (squircle) corners on every screen size. It opens with the **Route** button and closes with **Hide**. **Camera ride** and **Report water** buttons float on the map.
+## Why this exists
 
-What it does **not** do:
-- measure water depth;
-- certify that a road is safe;
-- show live traffic colours;
-- search along the route;
-- integrate with Apple CarPlay. "Car" is a responsive layout for in-car or large screens, not a CarPlay app.
+Every year the same photo comes out of Delhi: a bus standing in brown water up to its windows under Minto Bridge, cars stuck behind it, a rider pushing a dead scooter out of knee-deep water.
+
+That rider did not choose to drive into a flood. Their map sent them there. Mainstream navigation is excellent at traffic and has no idea about water. The people standing near the underpass *can see it is flooded*. That knowledge simply never reaches the rider two kilometres away.
+
+DilliJalNav Edge closes that gap. It does that with three commitments:
+
+1. **Get ground truth into the route.** Reports from people nearby change the route of people on the way.
+2. **Never fake certainty.** Reports are claims, not measurements. The app shows the evidence and says what it does not know.
+3. **Never quietly turn the road green again.** Old evidence keeps the underpass avoided until someone actually reports it clear.
+
+## How it works in 30 seconds
+
+```mermaid
+flowchart LR
+  A["Someone near Minto Bridge<br/>reports: 'Minto Bridge ke neeche<br/>3 foot paani bhara hai'"] --> B["Amazon Bedrock drafts a<br/>structured report.<br/>Reporter reviews and sends"]
+  B --> C["Server applies the evidence<br/>policy. A second source makes<br/>it CORROBORATED"]
+  C --> D["Route validator rejects every<br/>route through the underpass"]
+  D --> E["Rider sees: Via Shivaji Flyover<br/>+1 min, +1.5 km, and why"]
+```
+
+The pilot corridor is **JLN Marg near Ajmeri Gate → Connaught Place**, with two real road-following candidates from OpenStreetMap and OSRM:
+
+| Candidate | Path | Distance | Time |
+|---|---|---|---|
+| **A** | Through the Minto Bridge underpass | 1.7 km | ~3 min |
+| **B** | Over Shivaji Flyover and Barakhamba Road | 3.2 km | ~4 min |
+
+On a dry day the app suggests A and says plainly: *"No current waterlogging reports on the assessed segments."* Once water is reported and corroborated, A is marked **AVOIDED**, B is selected and the rider is told the cost: **+1 min, +1.5 km**.
+
+## Features
+
+### Planning
+- **Map-first planner** that adapts to the screen: a bottom sheet on phones, a side panel on laptops, and a dark HUD with 54 px touch targets on car-size screens. The layout is chosen automatically.
+- **First-run role picker:** two-wheeler rider, car or cab driver, auto driver, commuter, community reporter. It sets the vehicle and the wording of the advice.
+- **Vehicle selector** (bike, auto, car, SUV, EV). It changes the explanation, but **no vehicle is ever cleared through reported water**.
+- **Tap-anywhere routing** within 8 km of the pilot underpass. With a key it uses the **Google Routes API** (traffic-aware ETAs, real two-wheeler mode, up to 3 alternatives). Otherwise it uses public **OSRM**. If the fastest route crosses a restricted hotspot, the server re-requests via the hotspot's bypass anchor and **validates the detour geometry**. A waypoint alone never proves avoidance.
+- **Why this route?** shows every source, its age, claimed depth and stalled vehicles, the policy rule and the known limits.
+- **Weather context** from Open-Meteo, shown as context only. Rain never confirms or clears waterlogging.
+- **Share trip** (Web Share with a WhatsApp fallback) and **SOS** (112, Delhi Traffic Police 1095, Delhi Jal Board 1916).
+
+### Reporting
+- **Structured choices:** water on the road, road blocked, no water seen, not sure. Plus an Ankle / Knee / Waist / Submerged depth claim and a stalled-vehicle count, always labelled as *claims*.
+- **Hindi, English or Hinglish** by typing or speaking (browser speech recognition).
+- **Amazon Bedrock drafting** turns free text into a structured draft. The reporter always sees *"We understood: …"* before anything is sent.
+- **Durable IndexedDB outbox:** reports survive reloads and offline periods, are retried with the same event ID, and are sent single-flight so concurrent sends never duplicate a report.
+
+### Riding
+- **Start ride:** camera on top, flood-checked route below, turn guidance from live GPS, off-route warning, cue sheet of every maneuver, lane hints where OpenStreetMap has them.
+- **Third-person ride map:** tilted 60° with 3D buildings, heading-up, with a rider avatar gliding between GPS fixes. It falls back to a flat follow camera without WebGL.
+- **Two on-device AI models** (see [On-device AI](#on-device-ai)) for potholes and possible water ahead.
+- **Camera-triggered personal reroute:** when the camera sees possible water, it reroutes *only that rider* for 20 minutes. It is never stored as evidence.
+- **Speed-adaptive dashcam:** 2 fps stopped, 10 fps below 25 km/h, 20 fps cruising, 30 fps for 10 s around a hazard, with time, speed and position burned in.
+- **Pocket mode:** camera never opened, black screen to save AMOLED battery, voice turn-by-turn and spoken warnings near flooded hotspots.
+- **Natural bilingual voice:** neural en-IN and hi-IN voices via `GET /v1/tts`, prefetched at ride start. If audio is not ready within 1.2 s, the phone's built-in voice speaks instead, so a warning is never late.
+
+### Honest by design
+- Every screen shows its mode: `Demo · synthetic reports`, `AWS demo · synthetic reports`, `Pilot · community reports` or `Offline · last synced …`. There is no hidden fallback to mock data.
+- If no candidate route is admissible, the app says so instead of drawing a reassuring line.
+- Maps degrade gracefully. With no Google key, offline, or with a rejected key, the same drawing code runs on Leaflet + OpenStreetMap.
+
+## The evidence policy
+
+`flood-policy-v1` is a small set of transparent rules instead of a hidden confidence score. Each hotspot is always in exactly one state.
+
+```mermaid
+stateDiagram-v2
+  [*] --> UNKNOWN
+  UNKNOWN --> REPORTED: 1 fresh water/blocked report
+  REPORTED --> CORROBORATED: 2nd distinct source agrees
+  REPORTED --> CONFLICTED: newer "no water" report
+  CORROBORATED --> CONFLICTED: newer "no water" report
+  REPORTED --> STALE: reports older than 30 min
+  CORROBORATED --> STALE: reports older than 30 min
+  CONFLICTED --> RECENTLY_CLEAR_REPORTED: reviewer accepts 2 distinct "no water" reports
+  STALE --> RECENTLY_CLEAR_REPORTED: reviewer accepts 2 distinct "no water" reports
+  STALE --> REPORTED: new fresh report
+  RECENTLY_CLEAR_REPORTED --> REPORTED: new water report
+```
+
+| State | Meaning | Underpass in routes? |
+|---|---|---|
+| `UNKNOWN` | No fresh evidence. **Not the same as dry.** | Allowed, with "no current reports" shown |
+| `REPORTED` | One fresh positive source | Avoided |
+| `CORROBORATED` | At least two distinct sources agree | Avoided |
+| `CONFLICTED` | A newer "no water" report disagrees | Avoided until reviewed |
+| `STALE` | Positive reports aged out (30 min), no accepted clear | **Still avoided** |
+| `RECENTLY_CLEAR_REPORTED` | A reviewer accepted two newer "no water" reports from distinct sources | Allowed, labelled as not official |
+
+Rules that make it trustworthy:
+- **Each source counts once.** Contributor identities are HMAC-pseudonymised on the server.
+- **Retries never become witnesses.** The same event ID with the same body returns the original result. The same event ID with a different body is rejected with `409`.
+- **Freshness comes from `observedAt`**, never from when an upload arrived.
+- **Writes are revision-guarded**, so two concurrent writers never overwrite each other.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  P[Route planner PWA] -->|GET hazards / POST compare| CF[CloudFront]
-  R[Reporter PWA<br/>IndexedDB outbox] -->|POST observation + event ID| CF
-  CF -->|/*| S3[(S3 private bucket<br/>static app)]
-  CF -->|/v1/*| GW[API Gateway HTTP API<br/>throttled]
-  GW -->|POST /v1/observations| I[IngestReport Lambda<br/>validation + idempotency]
-  GW -->|POST /v1/report-drafts| X[ReportDraft Lambda<br/>Bedrock, 2 s breaker, rules fallback]
-  GW -->|reads, compare, reviews, weather| L[Api Lambda<br/>evidence policy + route validator]
-  I -->|TransactWriteItems<br/>idempotency + observation + revision-guarded state| D[(DynamoDB<br/>PK/SK, TTL = retention only)]
-  L --> D
-  X --> B[Amazon Bedrock<br/>configurable model]
-  L --> F[Reviewed route fixtures +<br/>live OSRM bypass validation]
-  L --> W[Open-Meteo<br/>context only]
+  subgraph Client["Phone / laptop / car screen (PWA)"]
+    UI["Planner + Reporter + Ride UI<br/>TypeScript, Vite"]
+    OB[("IndexedDB outbox")]
+    ML["ONNX Runtime Web<br/>YOLOv8n + SegFormer-b0"]
+  end
+
+  UI -->|HTTPS| CF["Amazon CloudFront<br/>one origin, no CORS"]
+  OB -->|"POST /v1/observations<br/>same event ID on retry"| CF
+  CF -->|"/*"| S3[("Amazon S3<br/>private bucket + OAC<br/>app + AI models")]
+  CF -->|"/v1/*"| GW["Amazon API Gateway<br/>HTTP API, 10 rps, burst 20"]
+
+  GW -->|"POST /v1/observations"| L1["IngestReport Lambda<br/>validation + idempotency"]
+  GW -->|"POST /v1/report-drafts"| L2["ReportDraft Lambda<br/>2 s breaker → rules"]
+  GW -->|"reads, compare, reviews,<br/>weather, tts, demo"| L3["Api Lambda<br/>evidence policy + route validator"]
+
+  L1 -->|TransactWriteItems| DB[("Amazon DynamoDB<br/>PK/SK, TTL")]
+  L3 --> DB
+  L2 --> BR["Amazon Bedrock<br/>Converse API, Nova Lite"]
+  L3 --> RT["Google Routes / OSRM<br/>validated bypass"]
+  L3 --> WX["Open-Meteo<br/>context only"]
+  L3 --> TTS["Neural voice<br/>en-IN / hi-IN"]
+
+  L1 -.-> CW["Amazon CloudWatch Logs"]
+  L2 -.-> CW
+  L3 -.-> CW
 ```
 
-`backend/local_server.py` runs the same Lambda handler locally against an in-process store with the same contract. That proves the domain logic. It does not prove DynamoDB or IAM behaviour: for that, run `scripts/demo.py smoke` against the deployed URL.
+**Design choices:**
+- **One origin.** CloudFront serves the app from S3 and forwards `/v1/*` to the API. That removes every CORS problem and gives the HTTPS that the camera and GPS need.
+- **Three functions, one codebase.** `handlers/api.py` routes by path. Separate functions give separate log groups and least-privilege IAM: only the draft function can call Bedrock, and it has no table permissions.
+- **Pure domain core.** `backend/src/domain/` (policy, geometry, routes, validation, extraction) is standard-library Python with no AWS imports, so the same logic runs locally, in tests and on Lambda.
+- **No VPC, NAT gateway or provisioned concurrency.** It scales to zero and costs almost nothing when idle.
 
-## Run it locally (no AWS account needed)
+## How we use AWS
+
+| Service | What it does here | Why it matters |
+|---|---|---|
+| **Amazon CloudFront** | Serves the PWA and forwards `/v1/*` to the API from one domain. Managed caching for the app, caching disabled for the API. | One origin, HTTPS everywhere, no CORS, fast in India |
+| **Amazon S3** | Private bucket for the app, the ONNX models and the WASM runtime. Readable only via **Origin Access Control**. | No public bucket |
+| **Amazon API Gateway** (HTTP API) | REST endpoints with **throttling at 10 rps, burst 20**. | Protects the backend from abuse |
+| **AWS Lambda** | Three Python 3.12 functions on **arm64 (Graviton)**: `IngestReportFunction`, `ReportDraftFunction`, `ApiFunction`. | Lower cost, isolated logs and permissions |
+| **Amazon DynamoDB** | On-demand table with `PK/SK`. **TransactWriteItems** writes the observation, its idempotency key and the revision-guarded hotspot state together or not at all. **TTL** on `cleanupAt` enforces 7-day retention. | No lost or double-counted reports under concurrency |
+| **Amazon Bedrock** | **Converse API** with **Amazon Nova Lite** (`apac.amazon.nova-lite-v1:0`) turns Hindi, English and Hinglish text into a structured draft (place, water or negation, time reference, claimed depth). | Natural reporting in the language people actually use |
+| **AWS IAM** | One least-privilege role per function. The ingest role has table read/write only. The draft role has `bedrock:InvokeModel` only. | Small blast radius |
+| **Amazon CloudWatch Logs** | A log group per function with 7-day retention. Every response carries a `requestId`. | Any report can be traced end to end |
+| **AWS SAM + AWS CloudFormation** | `backend/template.yaml` defines the entire stack. `sam build` + `sam deploy` create it. `sam delete` removes it. | Reproducible infrastructure as code |
+
+**Bedrock guardrails in code** (`backend/src/providers/bedrock.py`):
+- **2 second circuit breaker.** If the model is slow or unavailable, the deterministic keyword extractor takes over, and the user never sees a `500`.
+- **No invented places.** The extracted location must be on an allowlist of known Delhi sites **and** appear in the original text.
+- **No invented depth.** Depth words must appear in the text.
+- **Drafts never change state.** A draft is only a suggestion until the reporter reviews and submits it.
+
+## Request flows
+
+### Reporting water
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant R as Reporter (PWA)
+  participant CF as CloudFront
+  participant D as ReportDraft Lambda
+  participant B as Amazon Bedrock
+  participant I as IngestReport Lambda
+  participant T as DynamoDB
+
+  R->>CF: POST /v1/report-drafts {"text": "Minto Bridge ke neeche 3 foot paani bhara hai"}
+  CF->>D: forward
+  D->>B: Converse (2 s budget)
+  B-->>D: place, water, depth, time
+  D-->>R: draft (method: bedrock | rules + reason)
+  Note over R: "We understood: …" review step
+  R->>R: queue in IndexedDB outbox (eventId)
+  R->>CF: POST /v1/observations (eventId, observedAt)
+  CF->>I: forward
+  I->>T: TransactWriteItems (idempotency key + observation + hotspot revision check)
+  T-->>I: ok / conditional failure
+  I-->>R: 201 new · 200 duplicate · 409 reused eventId · 422 invalid
+```
+
+### Choosing a route
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant P as Planner (PWA)
+  participant A as Api Lambda
+  participant T as DynamoDB
+  participant G as Google Routes / OSRM
+
+  P->>A: POST /v1/routes/compare {from, to, vehicle}
+  A->>T: read hotspot evidence
+  A->>A: evaluate flood-policy-v1 per hotspot
+  A->>G: candidate routes (live endpoints)
+  G-->>A: geometries
+  A->>A: test every candidate against hazard polygons in local metres<br/>(including segments that cross between vertices)
+  alt fastest route crosses a restricted hotspot
+    A->>G: re-request via the bypass anchor
+    A->>A: validate the detour geometry like any candidate
+  end
+  A-->>P: selected + rejected routes, reasons, +time, +distance, validUntil
+  Note over P: polls /v1/hazards every 15 s ± 20% and recalculates on change
+```
+
+### During a ride
+
+```mermaid
+flowchart TD
+  S[Start ride] --> M{Mode}
+  M -->|Camera| C[Open camera]
+  M -->|Pocket| V[Camera off, black screen]
+  C --> Y[YOLOv8n: potholes + depth estimate]
+  C --> W[SegFormer: share of road that looks like water]
+  W -->|2 of 3 checks ≥ 15%| PW[Possible water]
+  PW --> PR["Personal reroute (20 min, this rider only)<br/>+ spoken warning + dashcam clip"]
+  Y -->|depth > 0.06 m| UA[Urgent alert + dashcam clip]
+  V --> VG[Voice turn-by-turn + hotspot warnings]
+  C --> GPS[Live GPS guidance on 3D map]
+  V --> GPS
+```
+
+## On-device AI
+
+Both models run **in the browser with ONNX Runtime Web (WASM)**. No video ever leaves the phone.
+
+| Model | File | Job | Output |
+|---|---|---|---|
+| **YOLOv8n** | `app/public/models/pothole-yolov8n.onnx` | Pothole detection | Boxes plus a depth estimate in metres from flat-road geometry and in-box darkness and smoothness (`app/src/potholeDepth.ts`). Tiers: < 0.03 m logged, 0.03 to 0.06 m warning, > 0.06 m urgent + clip |
+| **SegFormer-b0** (ADE20K) | `app/public/models/water-segformer-b0-ade.onnx` | Per-pixel segmentation. Water, sea, river and lake classes count as water | Share of the road ahead that looks like water, about once a second. Two of three runs at ≥ 15% trigger "possible water" |
+
+On real photos, 6 of 7 flooded streets read 17 to 94% water, and 6 dry Delhi roads read 0%. **Test a photo** in Settings runs both models on any image. The water model is not trained on Delhi monsoon footage, so the app says *"possible water"* and never files a report by itself. The depth estimate is a heuristic and is labelled *"est."*.
+
+## Run it locally
+
+No AWS account is needed. Python 3.12+ and Node 22+ are required (Node 24 is tested). The backend uses only the standard library.
 
 **One command:**
 
@@ -108,66 +275,59 @@ flowchart LR
 python run.py
 ```
 
-It installs what is missing, builds the app if the source changed, starts the server, opens an HTTPS Cloudflare tunnel and **prints a QR code in the terminal**. Scan the QR code with the phone camera and the app opens on the phone with the camera and GPS working. Press Ctrl+C to stop everything.
-- Options: `--no-tunnel` (LAN link only; without HTTPS the phone camera stays off), `--port N`, `--rebuild`.
-- Keys are optional: `VITE_GOOGLE_MAPS_KEY` in `app/.env.local` and `GOOGLE_MAPS_API_KEY` in `.env`. With no keys, the map is OpenStreetMap and routing is OSRM.
+It installs what is missing, builds the app if the source changed, starts the server, opens an HTTPS Cloudflare tunnel and **prints a QR code**. Scan it with your phone and the app opens with the camera and GPS working. Press Ctrl+C to stop everything.
 
-The manual steps below do the same thing.
+Options: `--no-tunnel` (LAN only, so the camera stays off without HTTPS), `--port N`, `--rebuild`.
 
-You need Python 3.12 or newer, and Node 22 or newer (24 tested). The backend uses only the standard library.
+**Manual steps:**
 
 ```bash
 cd app && npm install && npm run build && cd ..
-python backend/local_server.py               # http://127.0.0.1:8787  (APP_MODE=local-demo)
+python backend/local_server.py        # http://127.0.0.1:8787  (APP_MODE=local-demo)
 ```
 
-Open `http://127.0.0.1:8787` in two browser windows, then:
-
-1. In window 1, the planner suggests **Via Minto Road underpass** and shows "No current waterlogging reports on the assessed segments."
-2. In window 2, go to **Report conditions** → *Water on the road* → contributor **A** → Review → Submit. The underpass becomes `REPORTED`.
+Open two windows at `http://127.0.0.1:8787`:
+1. Window 1 suggests **Via Minto Road underpass** with "No current waterlogging reports".
+2. In window 2, go to **Report conditions** → *Water on the road* → contributor **A** → Review → Submit. The state becomes `REPORTED`.
 3. Submit again as contributor **B**. The state becomes `CORROBORATED`.
-4. Within about 20 s (poll every 15 s ± 20% jitter; 17.1 s measured locally), window 1 shows "New report received · Route recalculated", rejects A and suggests **Via Shivaji Flyover**: +1 min, +1.5 km.
+4. Within about 20 s, window 1 shows "New report received · Route recalculated" and suggests **Via Shivaji Flyover** (+1 min, +1.5 km).
 5. Tap **Why this route?** to see each source, its age, the policy and the limits.
 
-You can also drive the demo from a terminal:
+**Drive it from a terminal:**
 
 ```bash
 python scripts/demo.py report a --text "Minto Bridge ke neeche paani hai"
 python scripts/demo.py report b
-python scripts/demo.py advance 35     # demo clock +35 min -> STALE, route still avoided
-python scripts/demo.py fail on        # route provider failure -> explicit 503 state
-python scripts/demo.py report a --depth knee --stalled 3   # claimed depth + stalled vehicles
-python scripts/demo.py draft "Minto Bridge ke neeche 3 foot paani bhara hai"   # Hinglish -> draft
-python scripts/demo.py rain 12        # SIMULATED rain (labelled) to show the weather advisory; "rain off" clears
-python scripts/demo.py reset          # clears the demo namespace only
+python scripts/demo.py advance 35            # demo clock +35 min → STALE, still avoided
+python scripts/demo.py fail on               # simulated provider failure → explicit 503
+python scripts/demo.py report a --depth knee --stalled 3
+python scripts/demo.py draft "Minto Bridge ke neeche 3 foot paani bhara hai"
+python scripts/demo.py rain 12               # simulated, labelled rain; "rain off" clears
+python scripts/demo.py reset
 ```
 
-On Windows PowerShell 5.1, `&&` does not work. Run each command on its own line. If `python` is blocked by Application Control (the `.venv` interpreter), call the system interpreter directly, for example `& "C:\Users\<you>\AppData\Local\Programs\Python\Python312\python.exe" backend/local_server.py`.
+**Optional keys:** `VITE_GOOGLE_MAPS_KEY` in `app/.env.local` (Maps JavaScript API) and `GOOGLE_MAPS_API_KEY` in `.env` (Routes API). With no keys, the map is OpenStreetMap and routing is OSRM.
 
 For UI work with hot reload, run `cd app && npm run dev`. Vite proxies `/v1` to the local server.
 
-## Tests
+On Windows PowerShell 5.1, `&&` does not work, so run each command on its own line. If Application Control blocks the `.venv` interpreter, call the system Python directly.
 
-| Command | What it proves | Result on 2026-10-10 |
-|---|---|---|
-| `python -m unittest discover -s backend/tests -v` | 58 tests: brief section 16 scenarios (E01–E18, R01–R10, S01–S04), the handler, DynamoDB transaction shape and cancellation handling (fake client), Hinglish extraction (positive, negated, ambiguous, the brief's examples), the Bedrock breaker (timeout, hallucinated place, invented depth), the dynamic bypass with stubbed OSRM, depth and stalled claims, and weather | 58/58 pass |
-| `cd app && npm run check` | Camera alert engine; outbox retries, single-flight, sign-in hold, invalid drop; navigation core (position along the route, next maneuver, hazard-segment clipping) | pass |
-| `python scripts/demo.py smoke` (against a running server) | Golden journey over HTTP with request IDs: idempotency, `409`, corroboration, route switch, concurrent writes, anonymous write rejected, stale, provider failure | 12/12 pass locally |
-| `node scripts/e2e-browser.mjs C:/djn-e2e` | Real headless Chrome at 360 px: no overflow, report → review → submit, corroboration, route switch, evidence drawer, XSS-safe text, Hindi, offline reload with a labelled saved route, offline queue delivered on reconnect, another client's reports rerouting a stopped page by polling, auto-fill from Hinglish, the reroute notice, the simulated-drive guidance, car layout with 54 px targets | 27/27 pass locally |
+## Deploy to AWS
 
-Mutation checks were also run: breaking the corroboration threshold, the line/polygon test or the outbox single-flight makes the tests fail. The smoke test has **not** yet been run against real AWS. Until it has, do not claim a working AWS deployment.
-
-## Deploy to AWS (aws-demo mode)
-
-You need the AWS CLI and SAM CLI, an account with a budget alarm, and a region of your choice.
+You need the AWS CLI v2, the AWS SAM CLI, Docker (for the arm64 build) and an account with a budget alarm.
 
 ```bash
+aws login --region ap-southeast-2            # browser sign-in, no access keys on disk
+
 cd backend
-sam build
-sam deploy --guided --stack-name dillijalnav-edge \
-  --parameter-overrides DemoAdminKey=<16+ random chars> PseudonymSalt=<16+ random chars> BuildId=$(git rev-parse --short HEAD) \
-  BedrockModelId=<a model or inference-profile ID enabled in your account+region, or leave empty for rules only>
-# outputs: AppUrl, SiteBucketName, DistributionId, TableName, FunctionName
+sam build --use-container                    # builds Linux arm64 wheels
+sam deploy --guided --stack-name dillijalnav-edge --region ap-southeast-2 \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides DemoAdminKey=<16+ random chars> PseudonymSalt=<16+ random chars> \
+    BuildId=$(git rev-parse --short HEAD) \
+    BedrockModelId=apac.amazon.nova-lite-v1:0 \
+    GoogleMapsApiKey=<optional Routes API key>
+# outputs: AppUrl, ApiUrl, SiteBucketName, DistributionId, TableName, *FunctionName
 
 cd ../app && npm run build
 aws s3 sync dist s3://<SiteBucketName> --delete
@@ -176,88 +336,111 @@ aws cloudfront create-invalidation --distribution-id <DistributionId> --paths "/
 DEMO_ADMIN_KEY=<same key> python ../scripts/demo.py --api <AppUrl> smoke
 ```
 
-The stack contains:
-- CloudFront, serving the app from a private S3 bucket (Origin Access Control) and forwarding `/v1/*` to the API, so everything is on one origin with no CORS;
-- an HTTP API throttled to 10 requests/s with bursts up to 20;
-- one arm64 Lambda function with a table-scoped IAM policy;
-- one on-demand DynamoDB table with TTL on `cleanupAt`;
-- 7-day log retention.
+Notes:
+- **Region:** use the Region your account or project lives in. A mismatch shows up as an expired sign-in in the browser.
+- **Bedrock model:** use a model or inference profile that is enabled in your account and Region. New accounts may need verification to finish first. Leave it empty for rules-only drafting. Check `method: "bedrock"` in a `/v1/report-drafts` response.
+- **Google Maps key:** if you restrict the browser key by HTTP referrer, add your CloudFront domain.
+- **Teardown:** `aws s3 rm s3://<SiteBucketName> --recursive`, then `sam delete --stack-name dillijalnav-edge`. Confirm the stack name first.
 
-No VPC, NAT gateway or provisioned concurrency is used. Check your account's current prices and credits before deploying. Budget alerts are not a spending cap.
+`live-pilot` mode (real community reports) is implemented in the handler. It requires a JWT `sub` for writes and a `reviewers` group for reviews. The template ships `aws-demo` only, until the write routes have a Cognito JWT authorizer.
 
-**Teardown:** run `aws s3 rm s3://<SiteBucketName> --recursive`, then `sam delete --stack-name dillijalnav-edge`. Confirm the stack name first. Never delete resources you did not create with this stack.
+## Tests
 
-`live-pilot` mode (real community reports) is implemented in the handler: it requires a JWT `sub`, and a `reviewers` group for reviews. The template does not ship it yet, because the write routes first need a Cognito JWT authorizer.
-
-## Recording the demo (under 3 minutes)
-
-The pitch can only claim what the build shows.
-
-| Time | Show | Say |
+| Command | What it proves | Result |
 |---|---|---|
-| 0:00–0:20 | The planner, with the route through Minto underpass | "A Delhi rider has to decide whether the usual underpass is passable after monsoon rain. Maps don't know about this water; local reports do." |
-| 0:20–1:00 | Report sheet: speak or type "Minto Bridge ke neeche 3 foot paani bhara hai", tap Auto-fill (show "Draft by Amazon Bedrock"), review, submit as A, then as B | "The report is a reviewed draft. Two separate contributors make it *corroborated*. Retries never count twice." |
-| 1:00–1:30 | Second window: red striped hotspot, reroute notice, Accept bypass, Start drive with the spoken caution and the green guidance banner | "The server rejects the route through the reported underpass, validates the flyover detour, and says what it costs: +1 min." |
-| 1:30–1:55 | `demo.py advance 35`: the state becomes STALE and the route is still avoided. Then `demo.py fail on`: an explicit failure | "Old reports don't turn the road green again, and failures are shown, never hidden." |
-| 1:55–2:30 | AWS console: the DynamoDB item and its revision, CloudWatch logs for the IngestReport and ReportDraft functions with request IDs | "API Gateway, three Lambdas, DynamoDB transactions, Bedrock with a 2-second fallback." |
-| 2:30–2:45 | Car layout, then the phone | "Same app on a phone or a car screen. Pilot: one underpass. Next: reviewed geometry for more hotspots." |
+| `python -m unittest discover -s backend/tests -v` | 58 tests: evidence scenarios (E01 to E18, R01 to R10, S01 to S04), the handler, DynamoDB transaction shape and cancellation handling, Hinglish extraction (positive, negated, ambiguous), the Bedrock breaker (timeout, hallucinated place, invented depth), the dynamic bypass, depth and stalled claims, weather | 58/58 pass |
+| `cd app && npm run check` | Camera alert engine, outbox retries / single-flight / sign-in hold, navigation core (position along route, next maneuver, hazard-segment clipping), water and depth heuristics | pass |
+| `python scripts/demo.py --api <url> smoke` | Golden journey over HTTP: idempotency, `409`, corroboration, route switch, 6 concurrent writes, anonymous write rejected, stale, provider failure | **12/12 pass on the live AWS deployment** |
+| `node scripts/e2e-browser.mjs C:/djn-e2e` | Real headless Chrome with a fake camera and fake GPS at 360 px: report → review → submit, corroboration, route switch, evidence drawer, XSS-safe text, Hindi, offline reload, offline queue, polling reroute, Hinglish auto-fill, ride with camera, Pocket mode, car layout | pass locally |
 
-Avoid these claims. None of them is true of this build:
-- the camera "detects water" or "measures pothole depth": it has a trained pothole detector plus two uncalibrated heuristics (possible-water cue, depth estimate);
-- "Google Maps routes into floods" as a fact: it is unverified;
-- "zero cost", "scales instantly", "prevents fake reports": deduplication limits duplicates, but it does not verify that reports are true;
-- the water is "flooded" or "3 ft deep" as fact: say *reported*;
-- rain "triggers" closures: rain is shown as context only;
-- copyrighted news photos without permission.
-
-## Configuration
-
-See [.env.example](.env.example). Secrets (`DEMO_ADMIN_KEY`, `PSEUDONYM_SALT`) exist only on the server. The browser receives no credentials. Demo contributors are labelled synthetic, and the server forces their reports into the demo namespace with provenance `SYNTHETIC_DEMO`.
+Mutation checks were also run. Breaking the corroboration threshold, the line/polygon test or the outbox single-flight makes the tests fail.
 
 ## API
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /v1/status` | public | mode, policy version, capabilities, server time |
-| `GET /v1/hotspots?corridorId=MINTO_CP` | public | corridor metadata, presets, hotspot geometry |
-| `GET /v1/hazards?corridorId=MINTO_CP` | public | evaluated state per hotspot, with revision |
-| `GET /v1/hotspots/{id}/evidence` | public, redacted | source labels ("Source 1"), ages and policy reason; no identities |
-| `POST /v1/observations` | demo contributor header (demo) or JWT (pilot) | idempotent report; `201` new, `200` duplicate, `409` reused event ID or mode mismatch, `422` invalid, `429` rate limit |
-| `POST /v1/routes/compare` | public | route decision for a preset pair, or for tapped endpoints within 8 km (live OSRM + validated bypass); `vehicle` is echoed but never relaxes restrictions |
-| `POST /v1/report-drafts` | demo contributor header (demo) or JWT (pilot) | Hinglish text to a draft (Bedrock or rules, with fallback reason); never changes state |
-| `GET /v1/weather` | public | Open-Meteo model rainfall near the corridor and an advisory flag; context only |
-| `POST /v1/reviews` | demo admin key (demo) or `reviewers` group (pilot) | clear decision, with revision check |
-| `POST /v1/demo/control` | demo admin key, demo only | reset the demo namespace, demo clock offset, simulated provider failure |
+| `GET /v1/status` | public | Mode, policy version, capabilities, server time |
+| `GET /v1/hotspots?corridorId=MINTO_CP` | public | Corridor metadata, presets, hotspot geometry |
+| `GET /v1/hazards?corridorId=MINTO_CP` | public | Evaluated state per hotspot, with revision |
+| `GET /v1/hotspots/{id}/evidence` | public, redacted | Source labels ("Source 1"), ages and policy reason. No identities |
+| `POST /v1/observations` | demo contributor header (demo) or JWT (pilot) | Idempotent report. `201` new, `200` duplicate, `409` reused event ID or mode mismatch, `422` invalid, `429` rate limit |
+| `POST /v1/routes/compare` | public | Route decision for a preset pair or tapped endpoints within 8 km. `avoid` adds a personal camera reroute. `vehicle` never relaxes restrictions |
+| `POST /v1/report-drafts` | demo contributor header (demo) or JWT (pilot) | Text → draft (Bedrock or rules, with fallback reason). Never changes state |
+| `GET /v1/geocode` | public | Place search for From/To |
+| `GET /v1/weather` | public | Open-Meteo rainfall near the corridor plus an advisory flag. Context only |
+| `GET /v1/tts?text=&lang=en\|hi` | public | Neural voice MP3 for alerts and turns |
+| `POST /v1/reviews` | demo admin key (demo) or `reviewers` group (pilot) | Clear decision, with revision check |
+| `POST /v1/demo/control` | demo admin key, demo only | Reset the demo namespace, demo clock offset, simulated provider failure |
 
 Errors use the envelope `{"error": {"code", "message", "retryable", "requestId"}}`.
+
+## Configuration
+
+See [.env.example](.env.example). Secrets (`DEMO_ADMIN_KEY`, `PSEUDONYM_SALT`) exist only on the server, and the browser receives no credentials. Demo contributors are labelled synthetic, and the server forces their reports into the demo namespace with provenance `SYNTHETIC_DEMO`.
+
+| Variable | Where | Purpose |
+|---|---|---|
+| `APP_MODE` | server | `local-demo` \| `aws-demo` \| `live-pilot` |
+| `DEMO_ADMIN_KEY` | server | Demo reviewer actions and `/v1/demo/control` |
+| `PSEUDONYM_SALT` | server | HMAC salt for contributor pseudonyms |
+| `EVIDENCE_FRESHNESS_MINUTES` | server | Policy freshness window (default 30) |
+| `HAZARD_POLL_SECONDS` | server | Client poll interval it is told to use (default 15) |
+| `RETENTION_DAYS` | server | DynamoDB TTL for observations and idempotency rows (default 7) |
+| `TABLE_NAME` | server (AWS) | Set = DynamoDB. Unset = in-process store |
+| `BEDROCK_MODEL_ID` | server (AWS) | Bedrock model or inference profile. Empty = rules only |
+| `GOOGLE_MAPS_API_KEY` | server | Optional Google Routes API. Empty = public OSRM |
+| `VITE_API_BASE` | build | Empty = same origin (correct for CloudFront and the local server) |
+| `VITE_GOOGLE_MAPS_KEY` | build | Optional Maps JavaScript API key. Empty = OpenStreetMap |
 
 ## Repository layout
 
 ```
 app/                     Vite + TypeScript PWA (no framework)
-  src/flood/             planner, report, evidence, API client, outbox, EN/HI strings
-  src/main.ts            screen wiring + experimental camera (inherited)
-  src/detector.ts, hazards.ts, dashcam.ts, alerts.ts, geo.ts   inherited camera stack
+  src/flood/             planner, report, evidence, API client, outbox, navigation core, EN/HI strings
+  src/map/               Google Maps / Leaflet map view, markers, palette tint
+  src/main.ts            screen wiring, ride screen, camera loop
+  src/detector.ts        YOLOv8n pothole detector (ONNX Runtime Web)
+  src/waterModel.ts      SegFormer water segmentation
+  src/water.ts           water cue logic (2 of 3 at 15 %)
+  src/potholeDepth.ts    depth estimate heuristic
+  src/dashcam.ts         speed-adaptive recorder
+  public/models/         ONNX models
+  public/sw.js           service worker (offline shell)
 backend/
-  src/domain/            policy.py, geometry.py, routes.py, validation.py (pure, stdlib)
+  src/domain/            policy.py, geometry.py, routes.py, validation.py, extract.py (pure, stdlib)
+  src/providers/         bedrock.py, external.py (routing, weather, geocode), tts.py
+  src/storage/           local.py (in-process), dynamo.py (DynamoDB)
   src/service.py         operations, idempotency, revisions, auth mapping
   src/handlers/api.py    Lambda entry point
-  src/storage/           local.py (in-process), dynamo.py (DynamoDB)
   src/data/              pilot corridor fixtures + DATA_SOURCES.md
-  template.yaml          SAM stack
-  local_server.py        local demo server
+  template.yaml          AWS SAM stack
+  local_server.py        local server with the same contract
   tests/                 acceptance scenarios
 scripts/                 demo.py, e2e-browser.mjs, fetch_corridor.py
-server/, ml/, android/   inherited pothole backend, training and TWA notes (legacy reference)
+assets/                  README images
+ml/                      dataset config and training scripts for the next camera model
+server/, android/        earlier pothole backend and TWA notes (legacy reference)
+run.py                   one-command local run with HTTPS tunnel + QR code
 ```
 
-## Limits and next steps
+## Limits and roadmap
 
-- **One corridor and one hotspot.** The geometry is a candidate retrieved by script and is not yet human-reviewed (`backend/src/data/DATA_SOURCES.md`). The next step is a map review, then more hotspots that pass the same checks.
-- **Reports are claims.** Source distinction is pseudonymous and approximate. Several accounts, or coordinated false reports, can still mislead the system. The app shows evidence; it does not verify it.
-- **Routing:** the fixture corridor uses reviewed OSRM geometry; live routes use Google Routes (traffic-aware, two-wheeler) when a key is set, otherwise OSRM free-flow. No traffic colours are drawn.
-- **Camera estimates are heuristics:** the water cue and pothole depth have not been validated on Delhi footage. `ml/hazards4.yaml` sets up the next model (pothole, waterlogging, stalled vehicle, road blockage) and lists candidate datasets; licences must be checked before training.
-- **Not built yet:** Cognito sign-in for pilot writes, a water-segmentation model, live traffic, search along the route. Bedrock extraction is wired up but has not been tested against a real model: set `BedrockModelId` and check `method: "bedrock"` in a draft response.
-- **The legacy pothole server test** (`server/test_server.py`) needs `httpx`, which is in `server/requirements.txt`.
+**What it does not do:**
+- It does not measure water depth. Depths are user claims.
+- It does not certify that a road is safe. It shows evidence and says what it does not know.
+- It has no live traffic colours, no search along the route, and no Apple CarPlay. "Car" is a responsive layout for large screens.
+
+**Known limits:**
+- **One corridor and one hotspot.** The geometry was retrieved by script and still needs human review (`backend/src/data/DATA_SOURCES.md`).
+- **Reports are claims.** Source distinction is pseudonymous and approximate. Several accounts or coordinated false reports can still mislead it.
+- **Camera estimates are heuristics.** The water cue and pothole depth are not validated on Delhi monsoon footage.
+
+**Roadmap:**
+- **More hotspots,** each with reviewed geometry and a validated bypass.
+- **Amazon Cognito sign-in** and a JWT authorizer for `live-pilot` writes and reviewer roles.
+- **A Delhi-trained camera model** for potholes, waterlogging, stalled vehicles and road blockages (`ml/hazards4.yaml`). Dataset licences must be checked before training.
+- **Partners on the ground:** delivery fleets, auto unions and civic bodies who already know where water collects every year.
+
+---
 
 Map data © OpenStreetMap contributors (ODbL).
