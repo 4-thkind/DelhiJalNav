@@ -1,330 +1,263 @@
-# PathFinder AR
+# DilliJalNav Edge
 
-PathFinder AR is a driver-assistance system for two-wheelers that runs entirely on a phone mounted to the handlebar. It watches the road through the phone camera, warns the rider by voice when a hazard is coming up in their path, keeps a rolling dashcam buffer that is only saved when the rider asks for it, and contributes anonymous hazard locations to a shared map that other riders and city maintenance teams can use. Detection happens on the device, so the safety features keep working without a network connection and no video ever leaves the phone.
+**Recent water reports. Better route decisions.**
 
-The project is made of three parts that live in this repository: a small YOLOv8n model trained to find potholes, a TypeScript progressive web app that runs that model in the browser and decides when to speak, and a FastAPI backend that merges reports from many riders into a single map with a confidence score for each hazard.
+DilliJalNav Edge helps a Delhi commuter decide whether to take their usual underpass route after local waterlogging reports. For one pilot corridor, it compares real road-following route candidates against recent community reports. If a route passes through a reported underpass, the app rejects it, shows the alternative and what it costs in time and distance, and explains why. When the evidence gets old, the app says it cannot confirm conditions. It never quietly turns the road green again.
 
-## Why this exists
+Built for **Environmental Hacks (WeMakeDevs × AWS), Track 02: Heat and Water**. See [PROVENANCE.md](PROVENANCE.md) for what was inherited from the earlier PathFinder AR project and what was built during the event.
 
-Cars in the mid-price range now come with collision warnings, lane assistance and built-in cameras. Motorcycles and scooters, which make up more than 70% of registered motor vehicles in India, get none of this, even though a two-wheeler rider is the road user most exposed to a bad surface. A pothole that a car rolls over can put a scooter on the ground.
+## What it does today
 
-Most of these incidents come down to timing rather than visibility. At 40 km/h a bike covers about 11 metres every second. If a rider notices a water-filled pothole 8 metres ahead, they have roughly 0.7 seconds to respond, which is less than typical reaction time plus braking distance. The hazard was visible the whole time; the rider simply noticed it too late. A phone camera pointed at the road can notice it earlier, and that small lead is what this project tries to give back to the rider.
+- **Pilot corridor:** JLN Marg near Ajmeri Gate → Connaught Place. There are two real candidates, retrieved from OpenStreetMap/OSRM:
+  - **A**, through the Minto Bridge underpass: 1.7 km, about 3 min.
+  - **B**, via Shivaji Flyover and Barakhamba Road: 3.2 km, about 4 min.
+- **Structured reports:** water on the road, road blocked, no water seen, or not sure. Optional Hindi, English or Hinglish text, and a review step ("We understood: …") before anything is sent. Reports go into a durable IndexedDB outbox, so they survive reloads and offline periods. Retries reuse the same event ID.
+- **Evidence policy `flood-policy-v1`:** transparent rules instead of a confidence score.
 
-## How the system fits together
+  | State | Meaning | Underpass in routes? |
+  |---|---|---|
+  | `UNKNOWN` | no fresh evidence; not the same as dry | allowed, with "no current reports" shown |
+  | `REPORTED` | one fresh positive source | avoided |
+  | `CORROBORATED` | at least two distinct sources agree | avoided |
+  | `CONFLICTED` | a newer "no water" report disagrees | avoided until reviewed |
+  | `STALE` | positive reports aged out (30 min) with no clear review | **still avoided** |
+  | `RECENTLY_CLEAR_REPORTED` | a reviewer accepted two newer "no water" reports from distinct sources | allowed; labelled as not official |
 
-The phone does all of the time-critical work. The camera feed is resized and passed to the detector, the detector's output goes through the alert engine, and the alert engine decides whether to say anything. In parallel the camera stream feeds a dashcam buffer held in memory. GPS and compass readings are used both to estimate speed for the alert engine and to tag hazards before they are queued for upload.
+  Each source counts once. Retries never become extra witnesses: the same event ID with a different body is rejected with `409`. Freshness comes from `observedAt`, never from when an upload arrived.
+- **Route decision on the server:** geometry is tested in local metres, including a segment that crosses the hazard between two vertices. The response carries the selected and rejected routes, rejection reasons, extra time and distance, revisions and a `validUntil`. If no candidate is admissible, the app says so instead of drawing a reassuring line.
+- **Explicit modes:** every screen shows `Demo · synthetic reports`, `AWS demo · synthetic reports`, `Pilot · community reports` or `Offline · last synced …`. There is no hidden fallback to mock data.
+- **Map-first navigation UI** (`MAP_UI_SPECIFICATION.md`). It adapts to the screen:
+  - **phone:** bottom sheet;
+  - **laptop:** side panel;
+  - **car-size screens** (wide and short): dark HUD with 54 px targets.
 
-The backend is optional from the rider's point of view. When it is reachable, the phone sends it small reports containing a location, a hazard type and a confidence value, and in return it receives hazards already known further along the road. When it is not reachable, reports wait in a local queue and are sent later.
+  The layout is picked automatically from the screen size; there is no toggle. The first run asks how you travel (two-wheeler rider, car/cab driver, auto driver, commuter, community reporter) and sets the vehicle from that.
+- **Start ride (camera + route):** the original PathFinder camera loop is back as the main ride screen. The camera is on top, with on-device YOLOv8n pothole detection, alerts and the dashcam. The flood-checked route is below, with turn guidance from real GPS, an off-route warning, and a spoken warning near a hotspot with reported water. If the camera is denied, the ride continues map-only. The camera needs HTTPS (use the Cloudflare tunnel on a phone).
+
+  It includes:
+  - a blue arrow-and-puck pointer with a heading beam and a street-name tag;
+  - a green guidance banner with a "Then …" chip, plus a tappable cue sheet of every maneuver from OSRM steps;
+  - lane glyphs, shown only where OpenStreetMap has lane data;
+  - a simulated drive, labelled as simulated;
+  - a re-center pill with a 7 s countdown;
+  - a cyan/red striped segment where a route crosses reported water.
+- **Reroute notice:** "Minto Bridge underpass bypassed", showing the state, the number of sources, the report age, the claimed depth and any claimed stalled vehicles. The user can **Accept bypass (+n min)** or **Keep original route**; keeping it shows an explicit warning. When the route changes, a spoken caution plays in Hindi or English.
+- **Vehicle selector** (bike / auto / car / SUV / EV): changes the advice wording. No vehicle is cleared through reported water. Depths are user claims, so an SUV does not get "direct transit".
+- **Tap-anywhere routing** within 8 km of the pilot underpass, server-side. With `GOOGLE_MAPS_API_KEY` set it uses the **Google Routes API**: traffic-aware ETAs, real **two-wheeler mode** for riders, and up to 3 alternatives. With no key, or on any Google failure, it falls back to the public OSRM API. If the fastest route crosses a restricted hotspot, the server re-requests the route through the hotspot's bypass anchor (Shivaji Flyover / Barakhamba Road) as a via-waypoint. It then **validates the detour geometry** like any other candidate. A waypoint alone never proves avoidance. In Hindi, turn instructions come back in Hindi.
+- **Google Maps** (`app/src/map/mapview.ts`): with `VITE_GOOGLE_MAPS_KEY` set, both maps use the Maps JavaScript API with palette-styled tiles (beige by day, a dark green HUD on the ride screen). With no key, offline, or if Google rejects the key, the same drawing code runs on Leaflet + OpenStreetMap.
+- **Camera-triggered reroute:** when the camera's water cue fires during a ride, the app asks the server for a route around the water, starting from where the rider is now (`avoid` in `POST /v1/routes/compare`). If the water is inside a known basin, the whole basin is avoided (for example Minto Bridge, which switches to the Shivaji Flyover bypass). Elsewhere, only roads within 30 m of the water are avoided. The change is **only for that rider, for 20 minutes**, and is never stored as evidence: a heuristic must not reroute other people. The demo build has a "Demo: camera sees water at the underpass" button that shows this without real water.
+- **Pothole depth estimate** (`app/src/potholeDepth.ts`), in **metres**: flat-road geometry gives the pothole's size on the ground. Darkness and smoothness inside the box, compared with the asphalt around it, give how sunken it looks. The result is "~0.12 m deep est." in three tiers: below 0.03 m is logged only, 0.03 to 0.06 m gets a warning, above 0.06 m gets an urgent alert and a saved dashcam clip. It is a heuristic and **not calibrated** against measured potholes; the overlay says "est.".
+- **Third-person ride map:** during a ride the map tilts 60° (Google vector map with 3D buildings, tinted to the palette) and turns heading-up. A rider avatar seen from behind glides between GPS fixes. Heading comes from the GPS course while moving, otherwise the route direction, otherwise the compass. Without WebGL, the same follow camera runs on a flat map. If location is off or blocked, the ride screen says so and explains how to turn it on, instead of showing a frozen map.
+- **Map tags:** a swirling **spiral** stands on every underpass with reported water (solid rim) and wherever the camera saw possible water (dashed rim). A floating **ping** marks every pothole the camera logged; it shows the estimated depth and stays on the phone for later rides. The camera view uses the same spiral and ping tags.
+- **Two ride modes** (pill in the top bar):
+  - **Camera:** the phone is on the handlebar; the camera is on and analysed as above.
+  - **Pocket:** the camera is never opened and the screen is black (saves AMOLED battery). It gives voice turn-by-turn plus spoken warnings near hotspots with reported water. The browser still needs the screen on for GPS; a web app cannot track in the background.
+- **Speed-adaptive dashcam** (`app/src/dashcam.ts`): frames are recorded at 2 fps when stopped, 10 fps below 25 km/h, 20 fps when cruising, and 30 fps for 10 s around a hazard. Time, speed and position are burned in. Footage stays in memory unless a clip is saved. Deep potholes and camera water save a clip automatically.
+- **Bilingual voice:** ride alerts and turn-by-turn in English or Hindi (Devanagari for the voice; phonetic Hinglish kept in `i18n.ts` for review).
+- **Hinglish report drafts** (`POST /v1/report-drafts`):
+  - Amazon Bedrock extracts the place, water / negation, time reference and the claimed depth.
+  - The model ID is configurable. A 2 s timeout acts as a circuit breaker, falling back to deterministic keyword rules, so the user never sees a 500.
+  - Output is checked against an allowlist of 5 Delhi sites, and the place and depth words must actually appear in the text.
+  - Voice input uses the browser's speech recognition where it is available.
+  - The draft is always reviewed by the user ("We understood …") before anything is sent.
+- **Depth and stalled-vehicle claims:** an Ankle / Knee / Waist / Submerged scale and a stalled-vehicle count. Both are shown as *claims*, never as measurements.
+- **Weather context:** Open-Meteo model rainfall near the corridor, shown as a chip, with an advisory when heavy rain is forecast. Rain never confirms or clears waterlogging.
+- **Share trip** (Web Share, falling back to WhatsApp) and **SOS** (112, Delhi Traffic Police 1095, Delhi Jal Board 1916; verify these locally).
+- The camera runs **two models on the phone**:
+  - **Potholes:** a YOLOv8n detector.
+  - **Water:** a **SegFormer-b0 segmentation model** that labels every pixel. The water, sea, river and lake classes count as water. About once a second it measures how much of the road ahead is water. Two of three runs at 15 % or more trigger a warning, a dashcam clip and the personal reroute.
+  - **Results on real photos:** 6 of 7 outdoor flooded streets read 17–94 % water, and 6 dry Delhi roads read 0 %.
+  - **Test a photo** in Settings runs both models on any picture.
+
+  The water model is not trained on Delhi monsoon footage, so the app says "possible water" and never files a report by itself (`app/src/water.ts`, `app/src/waterModel.ts`, checked by `app/src/water.check.ts`).
+- **Natural voice:** alerts and turns are spoken by neural voices (en-IN, hi-IN) from the Python `edge-tts` library through `GET /v1/tts`. Phrases are prefetched when a ride starts. If the audio is not ready within 1.2 s, or the phone is offline, the phone's built-in voice speaks instead, so a warning is never late.
+- **Route dock:** the planner panel is a bottom-left dock with smooth (squircle) corners on every screen size. It opens with the **Route** button and closes with **Hide**. **Camera ride** and **Report water** buttons float on the map.
+
+What it does **not** do:
+- measure water depth;
+- certify that a road is safe;
+- show live traffic colours;
+- search along the route;
+- integrate with Apple CarPlay. "Car" is a responsive layout for in-car or large screens, not a CarPlay app.
+
+## Architecture
 
 ```mermaid
-flowchart TB
-    subgraph PHONE["On the phone"]
-        direction TB
-        CAM["Camera, 1280x720 at 30 fps"]
-        PRE["Letterbox to 416x416 and normalise"]
-        YOLO["YOLOv8n in ONNX Runtime Web<br/>WebGPU, falling back to WASM"]
-        ENGINE["Alert engine"]
-        OUT["Voice warning and AR overlay"]
-        BUF["Rolling video buffer in memory"]
-        FILE["Saved incident clip"]
-        GPS["GPS and compass"]
-        Q["Offline report queue"]
-
-        CAM --> PRE --> YOLO --> ENGINE --> OUT
-        CAM --> BUF -->|"rider flags an incident"| FILE
-        GPS --> ENGINE
-        ENGINE -->|"location, type, confidence"| Q
-    end
-
-    subgraph SERVER["Backend"]
-        API["FastAPI"]
-        AGG["Cluster reports within 25 m<br/>and score them"]
-        DB[("SQLite")]
-        DASH["Municipal dashboard"]
-        API --> AGG --> DB --> DASH
-    end
-
-    Q -.->|"metadata only, never video"| API
-    DB -.->|"known hazards ahead"| ENGINE
+flowchart LR
+  P[Route planner PWA] -->|GET hazards / POST compare| CF[CloudFront]
+  R[Reporter PWA<br/>IndexedDB outbox] -->|POST observation + event ID| CF
+  CF -->|/*| S3[(S3 private bucket<br/>static app)]
+  CF -->|/v1/*| GW[API Gateway HTTP API<br/>throttled]
+  GW -->|POST /v1/observations| I[IngestReport Lambda<br/>validation + idempotency]
+  GW -->|POST /v1/report-drafts| X[ReportDraft Lambda<br/>Bedrock, 2 s breaker, rules fallback]
+  GW -->|reads, compare, reviews, weather| L[Api Lambda<br/>evidence policy + route validator]
+  I -->|TransactWriteItems<br/>idempotency + observation + revision-guarded state| D[(DynamoDB<br/>PK/SK, TTL = retention only)]
+  L --> D
+  X --> B[Amazon Bedrock<br/>configurable model]
+  L --> F[Reviewed route fixtures +<br/>live OSRM bypass validation]
+  L --> W[Open-Meteo<br/>context only]
 ```
 
-## Getting it running on a phone
+`backend/local_server.py` runs the same Lambda handler locally against an in-process store with the same contract. That proves the domain logic. It does not prove DynamoDB or IAM behaviour: for that, run `scripts/demo.py smoke` against the deployed URL.
 
-The app is built once and then served by the backend, so the rider app, the API and the dashboard all live on the same origin and port. A Cloudflare quick tunnel then gives that port a public HTTPS address.
+## Run it locally (no AWS account needed)
+
+**One command:**
 
 ```bash
-pip install -r server/requirements.txt
-python server/seed_demo.py                            # optional, fills the map with demo data
+python run.py
+```
 
+It installs what is missing, builds the app if the source changed, starts the server, opens an HTTPS Cloudflare tunnel and **prints a QR code in the terminal**. Scan the QR code with the phone camera and the app opens on the phone with the camera and GPS working. Press Ctrl+C to stop everything.
+- Options: `--no-tunnel` (LAN link only; without HTTPS the phone camera stays off), `--port N`, `--rebuild`.
+- Keys are optional: `VITE_GOOGLE_MAPS_KEY` in `app/.env.local` and `GOOGLE_MAPS_API_KEY` in `.env`. With no keys, the map is OpenStreetMap and routing is OSRM.
+
+The manual steps below do the same thing.
+
+You need Python 3.12 or newer, and Node 22 or newer (24 tested). The backend uses only the standard library.
+
+```bash
 cd app && npm install && npm run build && cd ..
-uvicorn server.main:app --port 8000
-cloudflared tunnel --url http://127.0.0.1:8000
+python backend/local_server.py               # http://127.0.0.1:8787  (APP_MODE=local-demo)
 ```
 
-Open the URL that `cloudflared` prints on the phone, allow camera and location access, and tap Start Ride. The municipal dashboard is at the same address with `/dashboard` appended.
+Open `http://127.0.0.1:8787` in two browser windows, then:
 
-The phone does not have to share a network with the laptop. The tunnel connects outward to Cloudflare, so there is no port forwarding or public IP involved, and the phone can be on mobile data. The tunnel also provides HTTPS, which matters because browsers will not grant camera access to an insecure page.
+1. In window 1, the planner suggests **Via Minto Road underpass** and shows "No current waterlogging reports on the assessed segments."
+2. In window 2, go to **Report conditions** → *Water on the road* → contributor **A** → Review → Submit. The underpass becomes `REPORTED`.
+3. Submit again as contributor **B**. The state becomes `CORROBORATED`.
+4. Within about 20 s (poll every 15 s ± 20% jitter; 17.1 s measured locally), window 1 shows "New report received · Route recalculated", rejects A and suggests **Via Shivaji Flyover**: +1 min, +1.5 km.
+5. Tap **Why this route?** to see each source, its age, the policy and the limits.
 
-The first visit downloads about 38 MB: the 12 MB model and the 25 MB WebAssembly runtime. It is worth doing this once on wifi. After that the service worker has everything cached, and because inference happens on the device, detection and the dashcam continue to work with no signal. Only the shared map pauses, and anything queued is sent once the connection returns.
-
-Quick tunnels are meant for testing. The laptop has to stay awake and the hostname changes every time the tunnel restarts. For a permanent setup, deploy `app/dist` to a static host and run the backend anywhere Python is available.
-
-For day-to-day development, `npm run dev` inside `app/` starts Vite with hot reload on a LAN address using a self-signed certificate. A phone on the same wifi can reach it after accepting the certificate warning. This is convenient for UI work, but the build-and-tunnel route above is the one to use for real rides. Detailed phone setup and the Play Store packaging steps are in [android/README.md](android/README.md).
-
-## The alert engine
-
-Running a pothole detector on road video is straightforward. Making the output useful to someone on a moving bike is where most of the work is. A raw detector fires on shadows, tar patches, manhole covers, wet asphalt and drain grates many times per kilometre, and a rider who hears a false warning every few seconds will stop listening within one commute. A warning system that is ignored is worse than none at all, because it takes attention and gives nothing back.
-
-The alert engine in [app/src/hazards.ts](app/src/hazards.ts) exists to throw most detections away. It is plain arithmetic with no browser dependencies, which makes it easy to test (see [app/src/hazards.check.ts](app/src/hazards.check.ts)) and easy to port. Each detection passes through a series of checks, and only one that survives all of them is spoken aloud.
-
-```mermaid
-flowchart TD
-    A["Detection from YOLOv8n"] --> B{"Confidence at least 0.4?"}
-    B -->|no| X1["Discarded"]
-    B -->|yes| C{"Matched across 3 or more frames?"}
-    C -->|no| X2["Discarded as flicker, shadow or glare"]
-    C -->|yes| D{"Inside the rider's path corridor?"}
-    D -->|no| X3["Tracked and drawn, never announced"]
-    D -->|yes| E["Estimate distance and time to reach it"]
-    E --> F{"Between 0.4 s and 3.5 s away?"}
-    F -->|"too far"| X4["Not relevant yet"]
-    F -->|"too close"| X5["Too late to help"]
-    F -->|yes| G{"Severity at least 0.35?"}
-    G -->|no| X6["Not worth interrupting for"]
-    G -->|yes| H{"Already announced this track?"}
-    H -->|yes| X7["Suppressed"]
-    H -->|no| I{"3 s since the last warning?"}
-    I -->|no| X8["Rate limited"]
-    I -->|yes| J["Speak the warning"]
-```
-
-The first filter is the detector's own confidence. Anything below 0.4 is not considered at all.
-
-The second filter is persistence over time. Detections are matched to existing tracks by class and bounding-box overlap, and a track has to be seen in at least three frames before it can raise a warning. A shadow or a patch of glare rarely survives three frames from a moving camera in the way a real pothole does, so this step removes most false positives on its own. Tracks that go unmatched for more than five frames are dropped.
-
-The third filter asks whether the hazard is actually in the rider's way. The engine projects a corridor in front of the bike that is narrow at the horizon and widens toward the bottom of the frame, following perspective. A pothole at the kerb is still detected, tracked and drawn on screen, but it is never announced. The AR overlay draws this corridor using the same function the engine tests against, so the lines the rider sees on screen are exactly the ones that decide what counts as in the path.
-
-Next the engine estimates how far away the hazard is and, using the current GPS speed, how many seconds until the bike reaches it. If there is no GPS fix yet it assumes about 29 km/h. A warning is only considered when the hazard is between 0.4 and 3.5 seconds away. Further than that, it is too early to matter; closer than that, there is nothing useful the rider can do with the information.
-
-Severity then combines the hazard type, the detector's confidence and the urgency implied by the time remaining. Anything below 0.35 is recorded but not spoken. Finally, each track is only ever announced once, and the engine waits at least three seconds between any two warnings so that a stretch of bad road does not turn into a stream of noise. What remains is spoken in a short form such as "pothole ahead, 20 metres", because a rider should be looking at the road, and the screen only confirms what the voice has already said.
-
-## Measuring distance with one camera
-
-A phone has no depth sensor, radar or second camera to work with. It does not need them, because a road is close enough to flat for a simple geometric model to work. If the road is a plane and the camera sits at a known height, then the position of the bottom edge of a bounding box in the frame determines how far away the object is. Something touching the horizon line is effectively infinitely far away; something at the bottom edge of the frame is right in front of the wheel.
-
-```
-        camera
-          |\
-   height |  \   angle below the horizon
-     (h)  |    \
-          |      \
-   =======+========\=================== road
-          |<--- d --->|
-
-                 d = h / tan(angle)
-```
-
-The angle comes directly from how far below the horizon line the bottom of the box sits, scaled by the camera's vertical field of view. Combined with speed, this gives the time to reach the hazard, which is what the warning decision actually depends on. Thirty metres is urgent at 60 km/h and irrelevant when the bike is being walked.
-
-The result is only as good as the camera geometry it is given, and that varies a lot between bikes. A phone on a scooter sits at a different height and angle from one on a sports bike, and the estimated distance scales directly with camera height. For that reason the geometry is exposed as settings in the app rather than hard-coded. The defaults are a camera height of 1.0 m, a horizon at 45% of the way down the frame, a 55 degree vertical field of view, and a warning window of 3.5 seconds.
-
-Calibrating takes about a minute with the phone in its mount. Measure the height from the lens to the road with a tape, since distance depends on it linearly and a guess is usually off by enough to matter. Then look at the camera view and adjust the horizon setting until the green corridor lines sit on the edges of your lane.
-
-## Training the model
-
-The detector is YOLOv8n fine-tuned on three public pothole datasets from the Hugging Face Hub. The preparation script downloads them, maps every source class to a single "pothole" class (the sources use inconsistent class ids), and splits the combined set into 1,428 training and 252 validation images. Training runs for 80 epochs at 416 pixels and takes about ten minutes on an RTX 4060. The best checkpoint is exported to ONNX with opset 12 and without built-in non-maximum suppression, because the app runs its own suppression in TypeScript. A separate script then checks that the exported tensor layout is what the app's decoder expects.
-
-```mermaid
-flowchart LR
-    A["Three public pothole datasets"] --> B["Merge and collapse class ids"]
-    B --> C["1,680 labelled images<br/>1,428 train, 252 val"]
-    C --> D["YOLOv8n, 80 epochs at 416 px"]
-    D --> E["best.pt"]
-    E --> F["ONNX export, opset 12, no NMS"]
-    F --> G["verify_onnx.py checks layout"]
-    G --> H["12 MB model in app/public/models"]
-```
+You can also drive the demo from a terminal:
 
 ```bash
-python ml/prepare_data.py    # download, merge and split the datasets
-python ml/train.py           # train and export to app/public/models/
-python ml/verify_onnx.py     # confirm the export matches the app's decoder
+python scripts/demo.py report a --text "Minto Bridge ke neeche paani hai"
+python scripts/demo.py report b
+python scripts/demo.py advance 35     # demo clock +35 min -> STALE, route still avoided
+python scripts/demo.py fail on        # route provider failure -> explicit 503 state
+python scripts/demo.py report a --depth knee --stalled 3   # claimed depth + stalled vehicles
+python scripts/demo.py draft "Minto Bridge ke neeche 3 foot paani bhara hai"   # Hinglish -> draft
+python scripts/demo.py rain 12        # SIMULATED rain (labelled) to show the weather advisory; "rain off" clears
+python scripts/demo.py reset          # clears the demo namespace only
 ```
 
-The best checkpoint, from epoch 79, reaches a mAP@50 of 0.796 and a mAP@50-95 of 0.470, with precision of 0.828 and recall of 0.733. The model file is 12 MB and runs at around 5 frames per second on a mid-range Android phone using WebGPU.
+On Windows PowerShell 5.1, `&&` does not work. Run each command on its own line. If `python` is blocked by Application Control (the `.venv` interpreter), call the system interpreter directly, for example `& "C:\Users\<you>\AppData\Local\Programs\Python\Python312\python.exe" backend/local_server.py`.
 
-These numbers are good for a small model but not good enough to act on directly. A precision of 0.83 means roughly one raw detection in six is wrong, which on a real ride works out to several false positives a minute. That is the reason the alert engine carries so much of the system's weight. The lower mAP@50-95 matters less than it looks, because the distance estimate only depends on the bottom edge of the box.
+For UI work with hot reload, run `cd app && npm run dev`. Vite proxies `/v1` to the local server.
 
-Augmentation is chosen for the conditions that actually degrade detection from a bike: low light, colour shifts, small rotations and changes in scale. Images are flipped horizontally but never vertically, since roads do not appear upside down. A larger model such as YOLOv8s would score higher but runs at about 2 frames per second on the same phone, which at 40 km/h means more than five metres of travel between frames. On a moving vehicle, latency is part of accuracy.
+## Tests
 
-## The shared hazard map
+| Command | What it proves | Result on 2026-10-10 |
+|---|---|---|
+| `python -m unittest discover -s backend/tests -v` | 58 tests: brief section 16 scenarios (E01–E18, R01–R10, S01–S04), the handler, DynamoDB transaction shape and cancellation handling (fake client), Hinglish extraction (positive, negated, ambiguous, the brief's examples), the Bedrock breaker (timeout, hallucinated place, invented depth), the dynamic bypass with stubbed OSRM, depth and stalled claims, and weather | 58/58 pass |
+| `cd app && npm run check` | Camera alert engine; outbox retries, single-flight, sign-in hold, invalid drop; navigation core (position along the route, next maneuver, hazard-segment clipping) | pass |
+| `python scripts/demo.py smoke` (against a running server) | Golden journey over HTTP with request IDs: idempotency, `409`, corroboration, route switch, concurrent writes, anonymous write rejected, stale, provider failure | 12/12 pass locally |
+| `node scripts/e2e-browser.mjs C:/djn-e2e` | Real headless Chrome at 360 px: no overflow, report → review → submit, corroboration, route switch, evidence drawer, XSS-safe text, Hindi, offline reload with a labelled saved route, offline queue delivered on reconnect, another client's reports rerouting a stopped page by polling, auto-fill from Hinglish, the reroute notice, the simulated-drive guidance, car layout with 54 px targets | 27/27 pass locally |
 
-A single detection from one phone is weak evidence. The same hazard reported independently by several riders at the same spot is much stronger, and the backend in [server/main.py](server/main.py) is responsible for turning the first into the second.
+Mutation checks were also run: breaking the corroboration threshold, the line/polygon test or the outbox single-flight makes the tests fail. The smoke test has **not** yet been run against real AWS. Until it has, do not claim a working AWS deployment.
 
-The phone is conservative about what it sends. A hazard is only reported after it has passed the alert engine and triggered a warning, and only if the detector's confidence was at least 0.55, because false positives on a shared map mislead every rider who uses it.
+## Deploy to AWS (aws-demo mode)
 
-When a report arrives, the server looks for an existing hazard of the same type within 25 metres. If it finds one, the report is merged into it: the report count goes up, the average confidence is updated, and the hazard's position moves slightly toward the new sighting so that repeated reports sharpen the location. If nothing matches, a new hazard is created.
+You need the AWS CLI and SAM CLI, an account with a budget alarm, and a region of your choice.
 
-```mermaid
-sequenceDiagram
-    participant A as Rider A
-    participant B as Rider B
-    participant API as Backend
-    participant C as Rider C
-    participant City as Municipality
+```bash
+cd backend
+sam build
+sam deploy --guided --stack-name dillijalnav-edge \
+  --parameter-overrides DemoAdminKey=<16+ random chars> PseudonymSalt=<16+ random chars> BuildId=$(git rev-parse --short HEAD) \
+  BedrockModelId=<a model or inference-profile ID enabled in your account+region, or leave empty for rules only>
+# outputs: AppUrl, SiteBucketName, DistributionId, TableName, FunctionName
 
-    A->>API: pothole at (lat, lon), confidence 0.81
-    Note over API: No hazard within 25 m, so a new one is created.<br/>1 report, low score.
-    B->>API: same spot, confidence 0.88
-    Note over API: Within 25 m, so the report is merged.<br/>2 reports, position refined, score rises.
-    Note over API: Four more riders pass and report it.<br/>6 reports, high score.
-    API-->>C: hazard 90 m ahead on your heading
-    Note over C: Warned before the camera can see it
-    API-->>City: hazard appears in the repair queue
+cd ../app && npm run build
+aws s3 sync dist s3://<SiteBucketName> --delete
+aws cloudfront create-invalidation --distribution-id <DistributionId> --paths "/*"
+
+DEMO_ADMIN_KEY=<same key> python ../scripts/demo.py --api <AppUrl> smoke
 ```
 
-Each hazard carries a score that combines how many reports it has, how confident those reports were, and how recently it was last seen:
+The stack contains:
+- CloudFront, serving the app from a private S3 bucket (Origin Access Control) and forwarding `/v1/*` to the API, so everything is on one origin with no CORS;
+- an HTTP API throttled to 10 requests/s with bursts up to 20;
+- one arm64 Lambda function with a table-scoped IAM policy;
+- one on-demand DynamoDB table with TTL on `cleanupAt`;
+- 7-day log retention.
 
-```
-score = min(1, mean_confidence * (1 - 0.55^reports) * 1.25) * 0.5^(age_days / 45)
-```
+No VPC, NAT gateway or provisioned concurrency is used. Check your account's current prices and credits before deploying. Budget alerts are not a spending cap.
 
-The corroboration term rises quickly and then levels off, because the difference between one and six reports matters a great deal while the difference between six and sixty does not. The age term halves the score every 45 days without a new sighting, so a road that has been repaired stops producing warnings without anyone having to report the repair. And because the detector's own confidence feeds into the score, a series of hesitant detections cannot produce a confident marker.
+**Teardown:** run `aws s3 rm s3://<SiteBucketName> --recursive`, then `sam delete --stack-name dillijalnav-edge`. Confirm the stack name first. Never delete resources you did not create with this stack.
 
-On the phone, hazards from the map are only announced when they lie within 40 degrees of the rider's current heading. This means the rider hears about the pothole around the next corner, not the one they have already passed.
+`live-pilot` mode (real community reports) is implemented in the handler: it requires a JWT `sub`, and a `reviewers` group for reviews. The template does not ship it yet, because the write routes first need a Cognito JWT authorizer.
 
-The same data drives the dashboard at `/dashboard`, which gives a city maintenance team a map of reported damage ranked by confidence, along with totals by hazard type.
+## Recording the demo (under 3 minutes)
 
-## Dashcam
+The pitch can only claim what the build shows.
 
-The dashcam in [app/src/dashcam.ts](app/src/dashcam.ts) records the camera stream in two-second chunks and keeps the most recent three minutes in memory, discarding the oldest chunk as each new one arrives. Nothing is written to storage during a normal ride. When the rider flags an incident, either with the button or a double tap, the current buffer is frozen into a local video file tagged with the current location. Saved clips are never uploaded automatically.
+| Time | Show | Say |
+|---|---|---|
+| 0:00–0:20 | The planner, with the route through Minto underpass | "A Delhi rider has to decide whether the usual underpass is passable after monsoon rain. Maps don't know about this water; local reports do." |
+| 0:20–1:00 | Report sheet: speak or type "Minto Bridge ke neeche 3 foot paani bhara hai", tap Auto-fill (show "Draft by Amazon Bedrock"), review, submit as A, then as B | "The report is a reviewed draft. Two separate contributors make it *corroborated*. Retries never count twice." |
+| 1:00–1:30 | Second window: red striped hotspot, reroute notice, Accept bypass, Start drive with the spoken caution and the green guidance banner | "The server rejects the route through the reported underpass, validates the flyover detour, and says what it costs: +1 min." |
+| 1:30–1:55 | `demo.py advance 35`: the state becomes STALE and the route is still avoided. Then `demo.py fail on`: an explicit failure | "Old reports don't turn the road green again, and failures are shown, never hidden." |
+| 1:55–2:30 | AWS console: the DynamoDB item and its revision, CloudWatch logs for the IngestReport and ReportDraft functions with request IDs | "API Gateway, three Lambdas, DynamoDB transactions, Bedrock with a 2-second fallback." |
+| 2:30–2:45 | Car layout, then the phone | "Same app on a phone or a car screen. Pilot: one underpass. Next: reviewed geometry for more hotspots." |
 
-```mermaid
-stateDiagram-v2
-    [*] --> Idle
-    Idle --> Buffering: Start Ride
-    Buffering --> Buffering: 2 s chunks, oldest dropped
-    Buffering --> Saved: incident flagged
-    Saved --> Buffering: recording continues
-    Buffering --> [*]: End Ride, buffer discarded
-```
+Avoid these claims. None of them is true of this build:
+- the camera "detects water" or "measures pothole depth": it has a trained pothole detector plus two uncalibrated heuristics (possible-water cue, depth estimate);
+- "Google Maps routes into floods" as a fact: it is unverified;
+- "zero cost", "scales instantly", "prevents fake reports": deduplication limits duplicates, but it does not verify that reports are true;
+- the water is "flooded" or "3 ft deep" as fact: say *reported*;
+- rain "triggers" closures: rain is shown as context only;
+- copyrighted news photos without permission.
 
-This keeps storage use flat and means that an uneventful ride leaves no footage behind at all. A dedicated motorcycle dashcam is expensive and easy to steal from a parked bike; this uses the phone the rider already has.
+## Configuration
 
-## Privacy
+See [.env.example](.env.example). Secrets (`DEMO_ADMIN_KEY`, `PSEUDONYM_SALT`) exist only on the server. The browser receives no credentials. Demo contributors are labelled synthetic, and the server forces their reports into the demo namespace with provenance `SYNTHETIC_DEMO`.
 
-The privacy guarantees here come from how the code is structured rather than from a policy. There is no code path anywhere in this repository that uploads video, frames, or the model's inputs. Camera frames are processed in memory and discarded, and the only thing that crosses the network is a hazard report containing a latitude, a longitude, a hazard type, a confidence value and a timestamp.
+## API
 
-```mermaid
-flowchart LR
-    subgraph DEVICE["Stays on the device"]
-        V["Camera frames"]
-        B["Rolling video buffer"]
-        C["Saved incident clips"]
-    end
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /v1/status` | public | mode, policy version, capabilities, server time |
+| `GET /v1/hotspots?corridorId=MINTO_CP` | public | corridor metadata, presets, hotspot geometry |
+| `GET /v1/hazards?corridorId=MINTO_CP` | public | evaluated state per hotspot, with revision |
+| `GET /v1/hotspots/{id}/evidence` | public, redacted | source labels ("Source 1"), ages and policy reason; no identities |
+| `POST /v1/observations` | demo contributor header (demo) or JWT (pilot) | idempotent report; `201` new, `200` duplicate, `409` reused event ID or mode mismatch, `422` invalid, `429` rate limit |
+| `POST /v1/routes/compare` | public | route decision for a preset pair, or for tapped endpoints within 8 km (live OSRM + validated bypass); `vehicle` is echoed but never relaxes restrictions |
+| `POST /v1/report-drafts` | demo contributor header (demo) or JWT (pilot) | Hinglish text to a draft (Bedrock or rules, with fallback reason); never changes state |
+| `GET /v1/weather` | public | Open-Meteo model rainfall near the corridor and an advisory flag; context only |
+| `POST /v1/reviews` | demo admin key (demo) or `reviewers` group (pilot) | clear decision, with revision check |
+| `POST /v1/demo/control` | demo admin key, demo only | reset the demo namespace, demo clock offset, simulated provider failure |
 
-    subgraph WIRE["Sent to the backend"]
-        D["latitude, longitude,<br/>hazard type, confidence,<br/>timestamp"]
-    end
-
-    D --> S["Backend"]
-```
-
-Reports carry no account, device identifier or session identifier, so individual reports cannot be linked to each other or to a person. Sharing can be switched off in the app's settings, and doing so has no effect on warnings or the dashcam, since neither of them depends on the network.
-
-## Technology choices
-
-The app is a plain TypeScript PWA built with Vite and no UI framework. Modern mobile browsers expose everything the safety loop needs, including the camera, GPS, compass, speech synthesis, `MediaRecorder` and GPU compute, and a PWA can be installed straight from a URL. A framework such as React or Flutter would add tooling without giving the app anything it currently lacks.
-
-Inference uses ONNX Runtime Web with the WebGPU backend where it is available and WebAssembly everywhere else. The same model file serves both, and WebGPU is several times faster on recent Android devices.
-
-Maps use Leaflet with OpenStreetMap tiles, and navigation uses the public Nominatim and OSRM services. None of these need API keys or billing, which keeps the project runnable by anyone. The public endpoints are rate limited and are fine for a prototype but not for production use.
-
-The backend is a single FastAPI file backed by SQLite. Spatial lookups narrow candidates with a bounding box and then compute exact distances with the haversine formula, which is accurate enough at city scale and avoids the need for a spatial database. Moving to PostGIS would make sense if the dataset grew well beyond a single city.
-
-For distribution, the PWA can be wrapped as a Trusted Web Activity, Google's supported mechanism for publishing a web app on the Play Store with full camera and location access. The steps are in [android/README.md](android/README.md). The one thing a web app cannot do is keep recording with the screen off; if that becomes a requirement it would be the reason to build a native app. The alert engine has no dependencies and would port easily, and the training script can export TFLite instead of ONNX by changing the export format.
+Errors use the envelope `{"error": {"code", "message", "retryable", "requestId"}}`.
 
 ## Repository layout
 
 ```
-ml/
-  prepare_data.py       download and merge the pothole datasets into YOLO format
-  train.py              fine-tune YOLOv8n and export ONNX into the app
-  verify_onnx.py        check the exported tensor layout against the app's decoder
-
-app/
-  src/detector.ts       ONNX session, letterboxing, YOLO output decoding, NMS
-  src/hazards.ts        alert engine: tracking, distance, path corridor, severity
-  src/hazards.check.ts  runnable assertions for the alert engine
-  src/geo.ts            GPS, compass, offline report queue, hazard map client
-  src/nav.ts            geocoding and routing
-  src/dashcam.ts        rolling in-memory video buffer
-  src/alerts.ts         chime and speech synthesis
-  src/main.ts           app wiring, AR rendering and UI
-  public/sw.js          service worker for offline caching
-
-server/
-  main.py               report clustering, consensus scoring and API
-  dashboard.html        municipal repair-priority dashboard
-  seed_demo.py          generates demo hazard data
-  test_server.py        runnable assertions for the backend
-
-android/README.md       phone testing and Play Store packaging
+app/                     Vite + TypeScript PWA (no framework)
+  src/flood/             planner, report, evidence, API client, outbox, EN/HI strings
+  src/main.ts            screen wiring + experimental camera (inherited)
+  src/detector.ts, hazards.ts, dashcam.ts, alerts.ts, geo.ts   inherited camera stack
+backend/
+  src/domain/            policy.py, geometry.py, routes.py, validation.py (pure, stdlib)
+  src/service.py         operations, idempotency, revisions, auth mapping
+  src/handlers/api.py    Lambda entry point
+  src/storage/           local.py (in-process), dynamo.py (DynamoDB)
+  src/data/              pilot corridor fixtures + DATA_SOURCES.md
+  template.yaml          SAM stack
+  local_server.py        local demo server
+  tests/                 acceptance scenarios
+scripts/                 demo.py, e2e-browser.mjs, fetch_corridor.py
+server/, ml/, android/   inherited pothole backend, training and TWA notes (legacy reference)
 ```
 
-## Checks
+## Limits and next steps
 
-There is no test framework. Each part of the system has a small script of assertions that can be run with one command.
+- **One corridor and one hotspot.** The geometry is a candidate retrieved by script and is not yet human-reviewed (`backend/src/data/DATA_SOURCES.md`). The next step is a map review, then more hotspots that pass the same checks.
+- **Reports are claims.** Source distinction is pseudonymous and approximate. Several accounts, or coordinated false reports, can still mislead the system. The app shows evidence; it does not verify it.
+- **Routing:** the fixture corridor uses reviewed OSRM geometry; live routes use Google Routes (traffic-aware, two-wheeler) when a key is set, otherwise OSRM free-flow. No traffic colours are drawn.
+- **Camera estimates are heuristics:** the water cue and pothole depth have not been validated on Delhi footage. `ml/hazards4.yaml` sets up the next model (pothole, waterlogging, stalled vehicle, road blockage) and lists candidate datasets; licences must be checked before training.
+- **Not built yet:** Cognito sign-in for pilot writes, a water-segmentation model, live traffic, search along the route. Bedrock extraction is wired up but has not been tested against a real model: set `BedrockModelId` and check `method: "bedrock"` in a draft response.
+- **The legacy pothole server test** (`server/test_server.py`) needs `httpx`, which is in `server/requirements.txt`.
 
-```bash
-cd app && npm run check        # alert engine: persistence, path corridor, severity, suppression
-python server/test_server.py   # clustering radius, scoring, decay, filters
-python ml/verify_onnx.py       # ONNX output layout matches the TypeScript decoder
-```
-
-The ONNX check is there because a change in the model's output layout would not cause an error. The app would simply draw boxes in the wrong places, which is not something you want to discover while riding.
-
-## Known limitations
-
-The model only recognises potholes. The severity model already has weights for speed breakers, water-filled potholes, waterlogging and debris, but there is no training data for them yet. Adding them needs labelled data and no code changes, since the pipeline does not assume a particular set of classes.
-
-Distance estimation assumes a flat road, so it tends to be optimistic on hills and crests. Using the accelerometer to estimate pitch would correct for this.
-
-At around 5 frames per second on mid-range hardware, a bike at 40 km/h moves about two metres between frames. INT8 quantisation, or a native build using NNAPI or Core ML, would help here.
-
-Incidents are flagged manually. The accelerometer is already available to the app for the compass, so an automatic crash trigger would be a small addition.
-
-The report endpoint has no authentication or rate limiting and trusts whatever it receives. That is acceptable for a prototype but would need device attestation or a similar measure before any real deployment.
-
-Continuous camera use and inference draw a lot of power and generate heat, particularly in hot weather. Reducing the inference rate when the bike is slow or stationary is the obvious next step.
-
-The app is not yet on the Play Store, although the packaging steps are documented and ready.
-
-## Where it could go next
-
-The core loop is in place: on-device detection, the alert engine, voice and AR output, the dashcam, the shared map and the dashboard. The near-term work is adding more hazard classes, wiring an automatic crash trigger, quantising the model, and submitting to the Play Store.
-
-```mermaid
-flowchart LR
-    subgraph DONE["Built"]
-        direction TB
-        D1["On-device detection"] --> D2["Alert engine"] --> D3["Voice and AR overlay"]
-        D3 --> D4["Rolling dashcam"] --> D5["Shared hazard map"] --> D6["Municipal dashboard"]
-    end
-
-    subgraph NEXT["Next"]
-        direction TB
-        N1["More hazard classes"] --> N2["Automatic crash trigger"]
-        N2 --> N3["INT8 quantisation"] --> N4["Play Store release"]
-    end
-
-    subgraph LATER["Later"]
-        direction TB
-        L1["Hazard-aware routing"] --> L2["Route safety scores"]
-        L2 --> L3["Automatic repair verification"] --> L4["Data access for fleets and cities"]
-    end
-
-    DONE --> NEXT --> LATER
-```
-
-Further out, the hazard data becomes useful beyond the app itself. Routing could avoid badly damaged roads, routes could be given a safety score, and the decay built into the scoring model could confirm repairs automatically when riders stop reporting a hazard. Municipalities could use the map in place of manual road surveys, delivery fleets could route riders around damage, and insurers could use it as evidence of road conditions. None of this requires the rider to pay anything; the rider contributes data and gets earlier warnings in return.
+Map data © OpenStreetMap contributors (ODbL).
