@@ -1,25 +1,50 @@
-import L from "leaflet";
-import "leaflet/dist/leaflet.css";
-
 import "./style.css";
-import { AlertVoice } from "./alerts.ts";
+import { voice } from "./alerts.ts";
 import { Dashcam } from "./dashcam.ts";
 import { Detector } from "./detector.ts";
+import {
+  along,
+  arrow,
+  cumulative,
+  formatDistance,
+  haversine,
+  MAX_USABLE_ACCURACY_M,
+  nextStep,
+  project,
+  smoothFix,
+  type Fix,
+} from "./flood/navcore.ts";
+import { avoidWater, initPlanner, onPlanChange, ridePlan, type RidePlan } from "./flood/planner.ts";
+import { alertText, type AlertKey } from "./flood/i18n.ts";
+import { estimatePotholeDepth, type DepthResult } from "./potholeDepth.ts";
 import { AlertEngine, corridorHalfWidth, type Alert, type Track } from "./hazards.ts";
 import { Compass, HazardNetwork, ReportQueue, RideLocation, distanceM } from "./geo.ts";
 import { className, type Detection } from "./types.ts";
-import { formatDistance, formatDuration, remainingM, route, search, type Place, type Route } from "./nav.ts";
+import { WaterGate, type WaterBox } from "./water.ts";
+import { WaterModel } from "./waterModel.ts";
+import { createMap, type Circle, type HtmlMarker, type Layer, type MapView } from "./map/mapview.ts";
+import { floodSpiral, potholePing, riderAvatar } from "./map/markers.ts";
+import { ahead, loadPotholes, logPothole } from "./potholeLog.ts";
 
+/** Legacy pothole API (server/main.py). The flood route flow uses /v1 instead. */
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
-const SETTINGS_KEY = "pathfinder.settings";
+const SETTINGS_KEY = "dillijalnav.cameraSettings";
+const LEGACY_SETTINGS_KEY = "pathfinder.settings";
+const MODEL_URL = "/models/pothole-yolov8n.onnx";
+const WATER_MODEL_URL = "/models/water-segformer-b0-ade.onnx";
+/** Run the water model about this often while riding. */
+const WATER_EVERY_MS = 800;
 /** Report to the network only when we are quite sure - false positives poison the map. */
 const REPORT_CONFIDENCE = 0.55;
+/** Further than this from the route line counts as off route. */
+const OFF_ROUTE_M = 60;
+/** Warn once when the rider is this close to a hotspot with reported water. */
+const WATER_WARN_M = 400;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const detector = new Detector();
 const engine = new AlertEngine();
-const voice = new AlertVoice();
 const dashcam = new Dashcam();
 const rider = new RideLocation();
 const queue = new ReportQueue(API_BASE);
@@ -33,7 +58,31 @@ const paint = overlay.getContext("2d")!;
 let stream: MediaStream | undefined;
 let wakeLock: WakeLockSentinel | undefined;
 let running = false;
-let ride = { startedAt: 0, metres: 0, hazards: 0, alerts: 0 };
+let cameraOn = false;
+let detectorReady = false;
+let detectorLoading: Promise<void> | undefined;
+let ride = { startedAt: 0, metres: 0, hazards: 0, alerts: 0, water: [] as { time: number; at?: [number, number] }[] };
+const waterModel = new WaterModel();
+const waterGate = new WaterGate();
+let waterLoading: Promise<void> | undefined;
+let waterBox: WaterBox | null = null;
+let waterAt = 0;
+/** Depth estimate per pothole track, refreshed every few frames. */
+const depthBy = new Map<number, DepthResult>();
+const depthCanvas = document.createElement("canvas");
+depthCanvas.width = depthCanvas.height = 48;
+const depthCtx = depthCanvas.getContext("2d", { willReadFrequently: true })!;
+let frameNo = 0;
+const RIDE_MODE_KEY = "dillijalnav.rideMode";
+type RideMode = "camera" | "pocket";
+let rideMode: RideMode = "camera";
+try {
+  if (localStorage.getItem(RIDE_MODE_KEY) === "pocket") rideMode = "pocket";
+} catch {
+  /* default camera */
+}
+/** The turn instruction already spoken, so each is said once. */
+let spokenStep = -1;
 let lastFrameAt = 0;
 let fps = 0;
 
@@ -46,10 +95,12 @@ interface Settings {
   warnSeconds: number;
   bufferSeconds: number;
   speech: boolean;
+  /** Natural neural voice from the server when online; built-in voice otherwise. */
+  neuralVoice: boolean;
   upload: boolean;
 }
 
-const settings: Settings = {
+const DEFAULT_SETTINGS: Settings = {
   heightM: 1,
   horizonFrac: 0.45,
   vFovDeg: 55,
@@ -57,9 +108,40 @@ const settings: Settings = {
   warnSeconds: 3.5,
   bufferSeconds: 180,
   speech: true,
-  upload: true,
-  ...(JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") as Partial<Settings>),
+  neuralVoice: true,
+  // sharing is an explicit choice, never a default
+  upload: false,
 };
+
+/**
+ * Stored settings are untrusted: a corrupt or hand-edited value must not stop
+ * the app from booting. Unknown keys and wrong types fall back to defaults.
+ */
+function loadSettings(): Settings {
+  const merged = { ...DEFAULT_SETTINGS };
+  let raw: unknown;
+  try {
+    raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? localStorage.getItem(LEGACY_SETTINGS_KEY) ?? "{}");
+  } catch {
+    raw = {};
+  }
+  if (raw && typeof raw === "object") {
+    for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
+      const value = (raw as Record<string, unknown>)[key];
+      if (typeof value === typeof DEFAULT_SETTINGS[key] && (typeof value !== "number" || Number.isFinite(value))) {
+        (merged[key] as unknown) = value;
+      }
+    }
+  }
+  try {
+    localStorage.removeItem(LEGACY_SETTINGS_KEY);
+  } catch {
+    /* ignore */
+  }
+  return merged;
+}
+
+const settings: Settings = loadSettings();
 
 function applySettings(): void {
   engine.cam.heightM = settings.heightM;
@@ -69,7 +151,12 @@ function applySettings(): void {
   engine.cfg.warnSeconds = settings.warnSeconds;
   dashcam.bufferSeconds = settings.bufferSeconds;
   voice.speech = settings.speech;
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  voice.neural = settings.neuralVoice;
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    /* storage blocked: settings last for this session only */
+  }
 }
 
 function bindSettings(): void {
@@ -92,7 +179,7 @@ function bindSettings(): void {
   bindRange("in-warn", "out-warn", "warnSeconds", (v) => v.toFixed(1) + " s");
   bindRange("in-buffer", "out-buffer", "bufferSeconds", (v) => v + " s");
 
-  for (const [id, key] of [["in-speech", "speech"], ["in-upload", "upload"]] as const) {
+  for (const [id, key] of [["in-speech", "speech"], ["in-neural", "neuralVoice"], ["in-upload", "upload"]] as const) {
     const box = $<HTMLInputElement>(id);
     box.checked = settings[key];
     box.addEventListener("change", () => {
@@ -103,234 +190,220 @@ function bindSettings(): void {
 }
 
 // ------------------------------------------------------------------ screens
-type ScreenName = "home" | "ride" | "summary" | "settings";
+const SCREENS = ["planner", "welcome", "place", "report", "evidence", "sos", "ride", "summary", "settings"] as const;
+type ScreenName = (typeof SCREENS)[number];
+/** Panels drawn over the planner map; the map stays visible (and keeps its state) underneath. */
+const OVERLAYS: readonly ScreenName[] = ["welcome", "place", "report", "evidence", "sos"];
 
 function show(target: ScreenName): void {
-  for (const name of ["home", "ride", "summary", "settings"] as ScreenName[]) {
-    $("screen-" + name).classList.toggle("hidden", name !== target);
-  }
+  const base = OVERLAYS.includes(target) ? "planner" : target;
+  for (const name of SCREENS) $("screen-" + name).classList.toggle("hidden", name !== target && name !== base);
+  if (!OVERLAYS.includes(target)) window.scrollTo(0, 0);
 }
 
-// ---------------------------------------------------------------------- map
-let map: L.Map | undefined;
-let rideMap: L.Map | undefined;
-let riderMarker: L.CircleMarker | undefined;
-let rideMarker: L.Marker | undefined;
-let routeLine: L.Polyline | undefined;
-const hazardLayer = L.layerGroup();
-const rideHazardLayer = L.layerGroup();
+// ------------------------------------------------------------- ride map + route
+let rideMap: MapView | undefined;
+let rideMarker: HtmlMarker | undefined;
+let rideTagLayer: Layer | undefined;
+let rideRouteLayer: Layer | undefined;
+const avatarEl = riderAvatar();
+/** Where the avatar should be (latest fix) and where it is drawn (eased towards it every frame). */
+let target: { lon: number; lat: number; heading: number } | undefined;
+let shown: { lon: number; lat: number; heading: number } | undefined;
+let lastFollowAt = 0;
+let potholes = loadPotholes();
+/** Detector tracks already put on the map this ride. */
+const mappedTracks = new Set<number>();
+/** Third-person camera: zoom, and how far ahead of the rider it looks so the avatar sits low on screen. */
+const FOLLOW_ZOOM = 18;
+const LOOK_AHEAD_M = 45;
+let plan: RidePlan | undefined;
+let accuracyCircle: Circle | undefined;
+let estimate: Fix | undefined;
+let planCum: number[] = [];
+const warnedHotspots = new Set<string>();
 
-let destination: Place | undefined;
-let activeRoute: Route | undefined;
+let rideMapReady: Promise<void> | undefined;
 
-const tiles = () =>
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 });
-
-function initMap(): void {
-  map = L.map("home-map", { zoomControl: false, attributionControl: false }).setView([20.59, 78.96], 5);
-  tiles().addTo(map);
-  hazardLayer.addTo(map);
-
-  // the in-ride map: no controls, nothing to fiddle with while moving
-  rideMap = L.map("ride-map", {
-    zoomControl: false,
-    attributionControl: false,
-    dragging: false,
-    scrollWheelZoom: false,
-    doubleClickZoom: false,
-    touchZoom: false,
-    keyboard: false,
-  }).setView([20.59, 78.96], 16);
-  tiles().addTo(rideMap);
-  rideHazardLayer.addTo(rideMap);
-}
-
-/**
- * Draw the crowdsourced hazards onto both maps.
- *
- * Consensus drives the styling: one lone report looks faint, many look solid.
- * The dark halo keeps them legible against the red route line.
- */
-function drawHazardLayers(): void {
-  for (const [layer, withPopup] of [[hazardLayer, true], [rideHazardLayer, false]] as const) {
-    layer.clearLayers();
-    for (const hazard of network.hazards) {
-      const marker = L.circleMarker([hazard.lat, hazard.lon], {
-        radius: 6 + 4 * hazard.score,
-        color: "#12181f",
-        weight: 2,
-        fillColor: "#ffd400",
-        fillOpacity: 0.45 + 0.5 * hazard.score,
-      });
-      if (withPopup) {
-        marker.bindPopup(
-          hazard.type.replace(/_/g, " ") +
-            " � " + hazard.reports + " report(s) � " +
-            Math.round(hazard.score * 100) + "% confidence",
-        );
-      }
-      marker.addTo(layer);
-    }
-  }
-  $("st-network").textContent = String(network.hazards.length);
-}
-
-/**
- * A cone pointing the way the phone is facing, like a maps app. Drawn as an
- * icon rather than a circle so it can be rotated with the compass.
- */
-function riderIcon(): L.DivIcon {
-  return L.divIcon({
-    className: "",
-    iconSize: [64, 64],
-    iconAnchor: [32, 32],
-    html:
-      '<div class="rider-marker"><svg viewBox="0 0 64 64">' +
-      '<g class="rider-cone">' +
-      // solid black, white-edged so it reads on both pale and dark map tiles
-      '<path d="M32 5 L47 33 A17 17 0 0 0 17 33 Z" fill="#0d0d0d" stroke="#fff" stroke-width="2.5"' +
-      ' stroke-linejoin="round"/>' +
-      "</g>" +
-      '<circle cx="32" cy="32" r="11" fill="#0d0d0d" stroke="#fff" stroke-width="3.5"/>' +
-      "</svg></div>",
+/** The in-ride map: dark HUD, no gestures, nothing to fiddle with while moving. */
+function initRideMap(): Promise<void> {
+  rideMapReady ??= createMap($("ride-map"), { center: [77.224, 28.636], zoom: FOLLOW_ZOOM, interactive: false, dark: true, tpp: true }).then((m) => {
+    rideRouteLayer = m.layer();
+    rideTagLayer = m.layer();
+    rideMap = m;
   });
+  return rideMapReady;
 }
 
-/** Point the cone along the compass, falling back to GPS course while moving. */
-function updateRiderHeading(): void {
-  const heading = compass.headingDeg ?? rider.headingDeg;
-  const cone = document.querySelector<SVGGElement>(".rider-cone");
-  if (cone && typeof heading === "number") cone.style.transform = `rotate(${heading}deg)`;
+/** The flood-checked route from the planner, drawn under the rider. */
+function drawPlan(): void {
+  rideRouteLayer?.clear();
+  if (!rideMap || !rideRouteLayer || !plan) return;
+  const pts = plan.route.geometry.coordinates;
+  rideRouteLayer.line(pts, { color: "#F7F4D5", weight: 11, opacity: 0.95 });
+  rideRouteLayer.line(pts, { color: plan.onOriginal ? "#8E3B2F" : "#839958", weight: 7 });
+  for (const h of plan.hotspots) {
+    rideRouteLayer.area(h.ring, { color: h.restricts ? "#D3968C" : "#6E7B70", weight: 3, fillOpacity: h.restricts ? 0.5 : 0.1 });
+  }
+  // before the first fix: the avatar waits (dimmed) at the start of the route, facing along it
+  if (!target) target = { lon: pts[0][0], lat: pts[0][1], heading: along(pts, planCum, 1).heading };
+  drawTags();
+  $("rg-dest").textContent = plan.destinationName;
+  const water = plan.hotspots.filter((h) => h.restricts);
+  $("ride-water").hidden = !water.length;
+  $("ride-water").textContent = water.length
+    ? plan.onOriginal
+      ? `Your route passes ${water.map((h) => h.name).join(", ")} with reported water. Do not enter water.`
+      : `Avoiding ${water.map((h) => h.name).join(", ")}: water reported.`
+    : "";
 }
 
-function drawRoute(): void {
-  routeLine?.remove();
-  routeLine = undefined;
-  if (!activeRoute || !rideMap) return;
-  routeLine = L.polyline(activeRoute.points, {
-    color: "#ff7a00",
-    weight: 7,
-    opacity: 0.95,
-    lineJoin: "round",
-  }).addTo(rideMap);
-}
-
-function updateNavStrip(): void {
-  $("nav-name").textContent = destination ? destination.name.split(",")[0] : "No destination set";
-  if (!activeRoute || !rider.position) {
-    $("nav-distance").textContent = destination ? "�" : "";
-    $("nav-eta").textContent = destination ? "routing�" : "free ride";
+/** Next maneuver and remaining distance, from the GPS fix snapped to the route. */
+function updateGuide(lon: number, lat: number, accuracyM: number): void {
+  if (!plan) {
+    $("rg-text").textContent = "No route selected - free ride";
     return;
   }
-  const left = remainingM(activeRoute, rider.position.coords.latitude, rider.position.coords.longitude);
-  $("nav-distance").textContent = formatDistance(left);
-  // hold the original ETA rather than recomputing from a noisy instant speed
-  $("nav-eta").textContent = formatDuration(activeRoute.durationS * (left / activeRoute.distanceM || 1));
+  const line = plan.route.geometry.coordinates;
+  const { travelled, offM } = project(line, planCum, [lon, lat]);
+  const left = Math.max(0, (planCum.at(-1) ?? 0) - travelled);
+  $("rg-left").textContent = formatDistance(left);
+  // never call "off route" on GPS noise alone: allow for the fix's own error
+  if (offM > Math.max(OFF_ROUTE_M, accuracyM * 1.5)) {
+    $("rg-arrow").textContent = "×";
+    $("rg-dist").textContent = formatDistance(offM);
+    $("rg-text").textContent = "Off route - head back to the highlighted road";
+  } else if (plan.route.steps.length) {
+    const { index, distanceToM } = nextStep(plan.route.steps, travelled);
+    const step = plan.route.steps[index];
+    $("rg-arrow").textContent = arrow(step.type, step.modifier);
+    $("rg-dist").textContent = formatDistance(distanceToM);
+    $("rg-text").textContent = step.instruction;
+    // spoken turn-by-turn: the whole point of pocket mode, useful with the camera too
+    if (index !== spokenStep && distanceToM <= 150) {
+      spokenStep = index;
+      // no distance in the sentence: the exact phrase was prefetched in the natural voice
+      voice.say(step.type === "arrive" ? alertText("ARRIVED").spoken : step.instruction);
+    }
+  }
+  // a hotspot with reported water nearby: one spoken warning per ride
+  for (const h of plan.hotspots) {
+    if (!h.restricts || warnedHotspots.has(h.id)) continue;
+    if (haversine([lon, lat], h.centroid) <= WATER_WARN_M) {
+      warnedHotspots.add(h.id);
+      ride.alerts++;
+      sayAlert("HOTSPOT_REPORTED", { name: h.name });
+    }
+  }
 }
 
-/** Route to a place the rider picked from the candidate list. */
-async function chooseDestination(place: Place): Promise<void> {
-  destination = place;
-  activeRoute = undefined;
-  $("dest-results").classList.add("hidden");
+/** Fetch the natural-voice audio for everything this ride may say, before it needs saying. */
+function prefetchVoice(): void {
+  const fixed: AlertKey[] = ["WATER_AHEAD", "WATER_REROUTE", "DEEP_POTHOLE", "ROUTE_UPDATED", "RIDE_CAMERA", "RIDE_POCKET", "ARRIVED"];
+  voice.lang = alertText("ARRIVED").voiceLang;
+  voice.prefetch([
+    ...fixed.map((k) => alertText(k).spoken),
+    ...[5, 10, 15, 20, 25, 30, 35, 40].map((m) => alertText("POTHOLE", { m }).spoken),
+    ...(plan?.hotspots.filter((h) => h.restricts).map((h) => alertText("HOTSPOT_REPORTED", { name: h.name }).spoken) ?? []),
+    ...(plan?.route.steps.map((st) => st.instruction) ?? []),
+  ]);
+}
 
-  const status = $("dest-status");
-  const here = rider.position;
-  if (!here) {
-    status.textContent = place.name + " � waiting for GPS before routing";
-    updateNavStrip();
-    return;
+function setPlan(next: RidePlan | undefined): void {
+  const changed = plan && next && plan.route.id !== next.route.id;
+  plan = next;
+  planCum = plan ? cumulative(plan.route.geometry.coordinates) : [];
+  drawPlan();
+  if (running) prefetchVoice(); // never while just planning: it competes with route requests
+  if (running && changed) {
+    spokenStep = -1;
+    voice.say(alertText("ROUTE_UPDATED").spoken);
+    showBanner(alertText("ROUTE_UPDATED").text, next!.route.label, true);
   }
-
-  status.textContent = "Finding a route�";
-  try {
-    activeRoute = await route(
-      { lat: here.coords.latitude, lon: here.coords.longitude },
-      place,
-    );
-    status.textContent = activeRoute
-      ? place.name + " � " + formatDistance(activeRoute.distanceM) + " � " + formatDuration(activeRoute.durationS)
-      : "No road route found to " + place.name;
-    drawRoute();
-  } catch (err) {
-    status.textContent = "Routing service unreachable: " + (err as Error).message;
-  }
-  updateNavStrip();
 }
 
 /**
- * Show every plausible match instead of guessing. Plenty of Indian place names
- * repeat across towns, and routing to the wrong one silently is worse than
- * asking.
+ * Tags on the ride map: a spiral where water is reported (people) or seen (this
+ * camera), a ping over every pothole this phone logged or the legacy pothole map
+ * holds. Legacy potholes never affect route decisions.
  */
-async function searchDestination(query: string): Promise<void> {
-  const status = $("dest-status");
-  const results = $("dest-results");
-  results.innerHTML = "";
-
-  if (!query.trim()) {
-    destination = undefined;
-    activeRoute = undefined;
-    drawRoute();
-    updateNavStrip();
-    status.textContent = "";
-    results.classList.add("hidden");
-    return;
+function drawTags(): void {
+  const layer = rideTagLayer;
+  if (!layer) return;
+  layer.clear();
+  for (const h of plan?.hotspots ?? []) {
+    if (h.restricts) layer.pin(h.centroid, floodSpiral(`Water reported · ${h.name}`, "reported"));
   }
-
-  status.textContent = "Searching�";
-  let places: Place[];
-  try {
-    const here = rider.position;
-    places = await search(
-      query,
-      here ? { lat: here.coords.latitude, lon: here.coords.longitude } : undefined,
-    );
-  } catch (err) {
-    status.textContent = "Place search unreachable: " + (err as Error).message;
-    return;
+  for (const w of ride.water) if (w.at) layer.pin(w.at, floodSpiral("Possible water · camera", "camera"));
+  for (const p of potholes) {
+    layer.pin(p.at, potholePing(p.depthM ? `Pothole · ~${p.depthM.toFixed(2)} m` : "Pothole", p.severe));
   }
+  for (const hz of network.hazards) layer.pin([hz.lon, hz.lat], potholePing("Reported pothole", hz.score >= 0.6));
+}
 
-  if (!places.length) {
-    status.textContent = "No match for that place.";
-    results.classList.add("hidden");
-    return;
+/** A pothole the camera is sure about goes on the map: GPS position + its distance along the heading. */
+function mapPothole(track: Track): void {
+  if (mappedTracks.has(track.id) || !shown || !estimate || !Number.isFinite(track.distanceM)) return;
+  mappedTracks.add(track.id);
+  const depth = depthBy.get(track.id);
+  potholes = logPothole(potholes, {
+    at: ahead([estimate.lon, estimate.lat], shown.heading, track.distanceM),
+    depthM: depth?.depthM,
+    severe: depth?.severity === "CRITICAL",
+    seen: Date.now(),
+  });
+  drawTags();
+}
+
+/** Heading for the follow camera: GPS course while moving, else the route direction, else the compass. */
+function headingFor(snappedTravelled: number | undefined): number | undefined {
+  if (rider.speedMps > 1.5) return rider.headingDeg;
+  if (plan && snappedTravelled !== undefined) return along(plan.route.geometry.coordinates, planCum, snappedTravelled).heading;
+  return compass.headingDeg;
+}
+
+/**
+ * Third-person follow camera. GPS arrives about once a second; easing the drawn
+ * position and heading towards the latest fix every frame makes the avatar
+ * glide instead of jump, and the tilted map turns so the road ahead is "up".
+ */
+function follow(now: number): void {
+  if (!running) return;
+  requestAnimationFrame(follow);
+  if (!rideMap || !target || $("screen-ride").classList.contains("pocket")) return;
+  const dt = Math.min(0.5, (now - (lastFollowAt || now)) / 1000);
+  lastFollowAt = now;
+  const k = shown ? 1 - Math.exp(-dt / 0.35) : 1;
+  const turn = ((((target.heading - (shown?.heading ?? target.heading)) % 360) + 540) % 360) - 180; // shortest way round
+  shown = {
+    lon: (shown?.lon ?? target.lon) + (target.lon - (shown?.lon ?? target.lon)) * k,
+    lat: (shown?.lat ?? target.lat) + (target.lat - (shown?.lat ?? target.lat)) * k,
+    heading: ((((shown?.heading ?? target.heading) + turn * k) % 360) + 360) % 360,
+  };
+  const at: [number, number] = [shown.lon, shown.lat];
+  rideMarker ??= rideMap.marker(at, avatarEl);
+  rideMarker.move(at);
+  const cone = avatarEl.querySelector<SVGElement>(".ra-cone");
+  if (cone) cone.style.transform = `rotate(${shown.heading}deg)`; // flat maps only (hidden when tilted)
+  rideMap.camera(rideMap.tilted ? ahead(at, shown.heading, LOOK_AHEAD_M) : at, shown.heading, FOLLOW_ZOOM);
+}
+
+/** Tell the rider why the map is not moving, with the fix, instead of a silent console warning. */
+function gpsProblem(err: GeolocationPositionError): void {
+  const box = $("gps-status");
+  box.hidden = false;
+  avatarEl.classList.add("weak");
+  if (!isSecureContext) {
+    box.textContent = "Location needs a secure link. Open the https:// link (scan the QR code from python run.py).";
+  } else if (err.code === err.PERMISSION_DENIED) {
+    box.textContent =
+      "Location is off or blocked, so the map cannot follow you. iPhone: Settings > Privacy & Security > Location Services: On, " +
+      "then Safari Websites: While Using the App. Android: turn Location on and allow it for this browser. Then start the ride again.";
+  } else if (err.code === err.POSITION_UNAVAILABLE) {
+    box.textContent = "No GPS signal yet. Move to open sky; the map starts following you as soon as a fix arrives.";
+  } else {
+    box.textContent = "Still waiting for GPS…";
   }
-
-  if (places.length === 1) {
-    await chooseDestination(places[0]);
-    return;
-  }
-
-  status.textContent = places.length + " places match � pick the right one:";
-  const here = rider.position;
-  for (const place of places) {
-    const away = here
-      ? distanceM(here.coords.latitude, here.coords.longitude, place.lat, place.lon)
-      : undefined;
-    const item = document.createElement("li");
-    item.tabIndex = 0;
-
-    const name = document.createElement("b");
-    name.textContent = place.name;
-    const detail = document.createElement("span");
-    detail.textContent = place.address;
-    item.append(name, detail);
-
-    if (away !== undefined) {
-      const near = document.createElement("em");
-      near.textContent = formatDistance(away) + " away";
-      item.append(near);
-    }
-
-    const pick = () => void chooseDestination(place);
-    item.addEventListener("click", pick);
-    item.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") pick();
-    });
-    results.append(item);
-  }
-  results.classList.remove("hidden");
 }
 
 // ------------------------------------------------------------------ overlay
@@ -415,16 +488,82 @@ function render(tracks: Track[]): void {
     paint.stroke();
 
     if (!track.inPath) continue;
+    const depth = depthBy.get(track.id);
+    drawPing(x + w / 2, y, dpr, hot || depth?.severity === "CRITICAL");
     const distance = Number.isFinite(track.distanceM) ? track.distanceM.toFixed(0) + " m" : "far";
-    const label = className(track.cls).replace(/_/g, " ") + " · " + distance;
+    const label = className(track.cls).replace(/_/g, " ") + " · " + distance + (depth ? ` · ~${depth.depthM.toFixed(2)} m deep est.` : "");
     paint.font = 13 * dpr + "px system-ui, sans-serif";
     const pad = 6 * dpr;
     const textW = paint.measureText(label).width;
     paint.fillStyle = hot ? "#ff4d4d" : "#ffb020";
-    paint.fillRect(x, y - 20 * dpr, textW + pad * 2, 20 * dpr);
+    paint.fillRect(x, y + h + 4 * dpr, textW + pad * 2, 20 * dpr);
     paint.fillStyle = "#12060a";
-    paint.fillText(label, x + pad, y - 6 * dpr);
+    paint.fillText(label, x + pad, y + h + 18 * dpr);
   }
+}
+
+/** Camera tag over a pothole: a round ping on a stem, bobbing just above the box (same look as the map). */
+function drawPing(cx: number, top: number, dpr: number, severe: boolean): void {
+  const bob = Math.sin(performance.now() / 260) * 3 * dpr;
+  const r = 11 * dpr;
+  const cy = top - 30 * dpr + bob;
+  paint.strokeStyle = "rgba(247, 244, 213, 0.9)";
+  paint.lineWidth = 2 * dpr;
+  paint.beginPath();
+  paint.moveTo(cx, top);
+  paint.lineTo(cx, cy + r);
+  paint.stroke();
+  paint.beginPath();
+  paint.arc(cx, cy, r, 0, Math.PI * 2);
+  paint.fillStyle = severe ? "#8E3B2F" : "#D3968C";
+  paint.fill();
+  paint.lineWidth = 3 * dpr;
+  paint.strokeStyle = "#F7F4D5";
+  paint.stroke();
+  paint.beginPath();
+  paint.arc(cx, cy, r * 0.42, 0, Math.PI * 2);
+  paint.fillStyle = "#0A3323";
+  paint.fill();
+}
+
+/** Camera tag where the water model sees water: a swirling spiral over the water, as on the map. */
+function drawWater(box: WaterBox | null): void {
+  if (!box || !video.videoWidth) return;
+  const dpr = window.devicePixelRatio || 1;
+  const { scale, dx, dy } = videoToScreen();
+  const x = box.x * video.videoWidth * scale + dx;
+  const y = box.y * video.videoHeight * scale + dy;
+  const w = box.w * video.videoWidth * scale;
+  const h = box.h * video.videoHeight * scale;
+  const cx = x + w / 2, cy = y + h / 2;
+  const R = Math.max(20 * dpr, Math.min(80 * dpr, Math.min(w, h) / 2));
+  const spin = performance.now() / 500;
+  paint.save();
+  // a light wash over the water area, flattened like the road
+  paint.fillStyle = "rgba(16, 86, 102, 0.28)";
+  paint.beginPath();
+  paint.ellipse(cx, cy, w / 2, h / 2, 0, 0, Math.PI * 2);
+  paint.fill();
+  paint.strokeStyle = "#F7F4D5";
+  paint.lineWidth = 3 * dpr;
+  paint.lineCap = "round";
+  paint.beginPath();
+  for (let i = 0; i <= 120; i++) {
+    const t = (i / 120) * 3 * 2 * Math.PI;
+    const r = R * (0.08 + 0.92 * (i / 120));
+    const px = cx + r * Math.cos(t + spin), py = cy + r * Math.sin(t + spin) * 0.55; // flattened onto the road
+    if (i) paint.lineTo(px, py);
+    else paint.moveTo(px, py);
+  }
+  paint.stroke();
+  const label = "water (model)";
+  paint.font = 12 * dpr + "px system-ui, sans-serif";
+  const tw = paint.measureText(label).width + 12 * dpr;
+  paint.fillStyle = "#D3968C";
+  paint.fillRect(cx - tw / 2, cy + R * 0.55 + 6 * dpr, tw, 18 * dpr);
+  paint.fillStyle = "#0A3323";
+  paint.fillText(label, cx - tw / 2 + 6 * dpr, cy + R * 0.55 + 19 * dpr);
+  paint.restore();
 }
 
 let bannerTimer: ReturnType<typeof setTimeout> | undefined;
@@ -438,14 +577,58 @@ function showBanner(title: string, sub: string, severe = false): void {
   bannerTimer = setTimeout(() => $("alert-banner").classList.add("hidden"), 2600);
 }
 
+/** Speak and show one bilingual alert. Urgent ones chime first and cut off older speech. */
+function sayAlert(key: AlertKey, vars: Record<string, string | number> = {}, sub = ""): void {
+  const a = alertText(key, vars);
+  voice.say(a.spoken, true);
+  showBanner(a.text, sub, true);
+}
+
+/**
+ * Depth tiers (potholeDepth.ts): MINOR is logged only, MODERATE gets the usual
+ * warning, CRITICAL gets the urgent alert and saves a dashcam clip.
+ */
 function handleAlert(alert: Alert): void {
+  mapPothole(alert.track);
+  const depth = depthBy.get(alert.track.id);
+  const sub = `${alert.distanceM.toFixed(0)} m` + (depth ? ` · ~${depth.depthM.toFixed(2)} m deep (estimate)` : "");
+  if (depth?.severity === "MINOR") return;
   ride.alerts++;
-  voice.announce(alert);
-  showBanner(
-    alert.label + " ahead",
-    "DISTANCE: " + alert.distanceM.toFixed(0) + " m",
-    alert.severity >= 0.6,
-  );
+  if (depth?.severity === "CRITICAL") {
+    sayAlert("DEEP_POTHOLE", {}, sub);
+    flagIncident("deep pothole");
+    return;
+  }
+  voice.announce({ ...alert, spoken: alertText("POTHOLE", { m: Math.max(5, Math.round(alert.distanceM / 5) * 5) }).spoken });
+  showBanner(alertText("POTHOLE").text, sub, alert.severity >= 0.6);
+}
+
+/** Record at full rate now and keep the clip a few seconds later, so it shows the hazard itself. */
+function flagIncident(reason: string): void {
+  dashcam.boost();
+  const position = rider.position;
+  setTimeout(() => {
+    if (dashcam.saveIncident(position, reason)) $("hud-buffer").textContent = "saved";
+  }, 5000);
+}
+
+/** Crop around a pothole box (half a box of road on each side) into a small luminance patch. */
+function measureDepth(track: Track): void {
+  const { x, y, w, h } = track.box;
+  depthCtx.drawImage(video, x - w / 2, y - h / 2, w * 2, h * 2, 0, 0, 48, 48);
+  const rgba = depthCtx.getImageData(0, 0, 48, 48).data;
+  const lum = new Uint8ClampedArray(48 * 48);
+  for (let i = 0; i < lum.length; i++) lum[i] = 0.299 * rgba[i * 4] + 0.587 * rgba[i * 4 + 1] + 0.114 * rgba[i * 4 + 2];
+  const depth = estimatePotholeDepth(track.box, video.videoWidth, video.videoHeight, engine.cam, { lum, w: 48, h: 48, margin: 0.5 });
+  if (depth) depthBy.set(track.id, depth);
+}
+
+/** Where the water probably is: ~20 m ahead on the route, from the smoothed GPS position. */
+function waterAhead(): { at: [number, number]; from: [number, number] } | undefined {
+  if (!estimate || !plan) return undefined;
+  const here: [number, number] = [estimate.lon, estimate.lat];
+  const line = plan.route.geometry.coordinates;
+  return { at: along(line, planCum, project(line, planCum, here).travelled + 20).point, from: here };
 }
 
 function reportHazard(alert: Alert): void {
@@ -462,10 +645,28 @@ function reportHazard(alert: Alert): void {
 }
 
 // -------------------------------------------------------------------- ride
+/**
+ * Start a ride on the planner's flood-checked route: camera on top (pothole
+ * detection, dashcam), route + turn guidance below from real GPS. Without a
+ * camera (denied, or no HTTPS) the ride continues map-only.
+ */
 async function startRide(): Promise<void> {
   voice.unlock();
   void compass.start();
-  try {
+  setupRide();
+  target = shown = undefined;
+  // the 3D map renderer only starts in a visible container, so show the ride screen first
+  show("ride");
+  await initRideMap();
+  avatarEl.classList.add("weak");
+  $("gps-status").hidden = true;
+  setPlan(ridePlan());
+  cameraOn = false;
+  voice.lang = alertText("RIDE_CAMERA").voiceLang;
+  const pocket = rideMode === "pocket";
+  $("screen-ride").classList.toggle("pocket", pocket);
+  $("pocket-note").hidden = !pocket;
+  if (!pocket) try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: "environment" },
@@ -475,30 +676,39 @@ async function startRide(): Promise<void> {
       },
       audio: false,
     });
+    video.srcObject = stream;
+    await video.play();
+    cameraOn = true;
   } catch (err) {
-    alert(
-      "Camera unavailable: " + (err as Error).message +
-        "\n\nThe app needs an HTTPS origin and camera permission.",
-    );
-    return;
+    console.warn("[camera]", err);
+    stream = undefined;
   }
-
-  video.srcObject = stream;
-  await video.play();
+  $("screen-ride").classList.toggle("no-camera", !cameraOn);
+  $("cam-off").hidden = cameraOn || pocket;
 
   engine.reset();
   network.reset();
-  dashcam.start(stream);
+  warnedHotspots.clear();
+  depthBy.clear();
+  mappedTracks.clear();
+  spokenStep = -1;
+  estimate = undefined;
+  if (stream) dashcam.start(video);
   rider.start();
-  ride = { startedAt: Date.now(), metres: 0, hazards: 0, alerts: 0 };
+  ride = { startedAt: Date.now(), metres: 0, hazards: 0, alerts: 0, water: [] };
+  waterGate.reset();
+  waterBox = null;
+  waterAt = 0;
   running = true;
   show("ride");
+  requestAnimationFrame(follow);
+  if (!("geolocation" in navigator) || !isSecureContext) gpsProblem({ code: 1, PERMISSION_DENIED: 1, POSITION_UNAVAILABLE: 2, TIMEOUT: 3, message: "insecure" } as GeolocationPositionError);
 
-  // leaflet measures its container on creation; this one was hidden until now
-  rideMap?.invalidateSize();
-  drawHazardLayers();
-  drawRoute();
-  updateNavStrip();
+  // the map was created while hidden; let it measure its container now
+  setTimeout(() => {
+    rideMap?.resize();
+    drawPlan();
+  }, 50);
 
   try {
     wakeLock = await navigator.wakeLock?.request("screen");
@@ -506,8 +716,13 @@ async function startRide(): Promise<void> {
     /* not fatal - the rider can keep the screen on manually */
   }
 
-  voice.say("Ride started. Watching the road.");
-  void loop();
+  voice.say(alertText(pocket ? "RIDE_POCKET" : "RIDE_CAMERA").spoken);
+  prefetchVoice();
+  if (cameraOn) {
+    // one model at a time: loading both together stalls phones
+    void ensureDetector().then(ensureWaterModel);
+    void loop();
+  }
 }
 
 async function loop(): Promise<void> {
@@ -519,12 +734,39 @@ async function loop(): Promise<void> {
     }
 
     let dets: Detection[] = [];
-    try {
-      dets = await detector.detect(video, video.videoWidth, video.videoHeight, engine.cfg.minScore);
-    } catch (err) {
-      console.error("[detect]", err);
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      continue;
+    if (detectorReady) {
+      try {
+        dets = await detector.detect(video, video.videoWidth, video.videoHeight, engine.cfg.minScore);
+      } catch (err) {
+        console.error("[detect]", err);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        continue;
+      }
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 120)); // the water model keeps running while this one loads
+    }
+
+    // water segmentation, about once a second: water on the road ahead
+    let waterAlert = false;
+    if (waterModel.ready && performance.now() - waterAt >= WATER_EVERY_MS) {
+      waterAt = performance.now();
+      try {
+        const water = await waterModel.analyse(video, engine.cam.horizonFrac);
+        waterBox = water.fraction >= waterGate.cfg.minFraction ? water.box : null;
+        $("hud-water").textContent = `water ${(water.fraction * 100).toFixed(0)}%`;
+        waterAlert = waterGate.update(water.fraction, waterAt);
+      } catch (err) {
+        console.error("[water]", err);
+      }
+    }
+    if (waterAlert) {
+      ride.alerts++;
+      const spot = waterAhead();
+      ride.water.push({ time: Date.now(), at: spot?.at ?? (shown ? [shown.lon, shown.lat] : undefined) });
+      drawTags();
+      sayAlert(spot ? "WATER_REROUTE" : "WATER_AHEAD", {}, "Experimental camera cue - do not ride into water");
+      flagIncident("possible water");
+      if (spot) avoidWater(spot.at, spot.from); // personal reroute; the server decides the route
     }
 
     const now = performance.now();
@@ -537,18 +779,22 @@ async function loop(): Promise<void> {
     }
 
     const tracks = engine.active;
+    frameNo++;
     for (const track of tracks) {
       if (!seen.has(track.id)) {
         seen.add(track.id);
         ride.hazards++;
       }
+      // depth matters only for what is in the lane; every 5th frame is plenty
+      if (track.inPath && (frameNo % 5 === 0 || !depthBy.has(track.id))) measureDepth(track);
     }
     render(tracks);
+    drawWater(waterBox);
 
     $("hud-fps").textContent = fps.toFixed(0);
     $("hud-speed").textContent = (rider.speedMps * 3.6).toFixed(0);
     $("hud-hazards").textContent = String(ride.hazards);
-    $("hud-buffer").textContent = dashcam.bufferedSeconds.toFixed(0) + "s";
+    $("hud-buffer").textContent = `${dashcam.bufferedSeconds.toFixed(0)}s · ${dashcam.fps} fps`;
 
     // yield to the compositor so the camera preview stays smooth
     await new Promise(requestAnimationFrame);
@@ -557,6 +803,7 @@ async function loop(): Promise<void> {
 
 async function endRide(): Promise<void> {
   running = false;
+  cameraOn = false;
   dashcam.stop();
   rider.stop();
   compass.stop();
@@ -575,6 +822,8 @@ async function endRide(): Promise<void> {
   $("sum-distance").textContent = (ride.metres / 1000).toFixed(2) + " km";
   $("sum-hazards").textContent = String(ride.hazards);
   $("sum-alerts").textContent = String(ride.alerts);
+  $("sum-water").textContent = String(ride.water.length);
+  $("sum-water-ask").hidden = ride.water.length === 0;
   renderClips();
   show("summary");
 
@@ -605,12 +854,12 @@ function renderClips(): void {
     const meta = document.createElement("div");
     meta.className = "fineprint";
     meta.textContent =
-      new Date(clip.at).toLocaleString() + " · last " + clip.seconds + "s" +
+      new Date(clip.at).toLocaleString() + " · " + clip.reason + " · last " + clip.seconds + "s" +
       (clip.lat !== undefined ? " · " + clip.lat.toFixed(5) + ", " + clip.lon!.toFixed(5) : "");
 
     const link = document.createElement("a");
     link.href = url;
-    link.download = "pathfinder-" + clip.id + ".webm";
+    link.download = "dillijalnav-clip-" + clip.id + (clip.blob.type.includes("mp4") ? ".mp4" : ".webm");
     link.textContent = "Download clip";
 
     card.append(player, meta, link);
@@ -618,49 +867,68 @@ function renderClips(): void {
   }
 }
 
-// -------------------------------------------------------------------- boot
-async function boot(): Promise<void> {
-  applySettings();
-  bindSettings();
-  initMap();
-  $("st-queue").textContent = String(queue.pending);
+// ------------------------------------------------------------- ride setup
+let rideSetup = false;
+
+/** GPS wiring for the ride. Runs once; the planner never needs a permission. */
+function setupRide(): void {
+  if (rideSetup) return;
+  rideSetup = true;
 
   let lastFix: GeolocationPosition | undefined;
-  // where the hazard layer was last downloaded, so a long ride keeps pulling in
-  // the road ahead instead of riding off the edge of the initial 3 km fetch
+  // where the legacy pothole layer was last downloaded
   let refreshedAt: { lat: number; lon: number } | undefined;
 
   async function refreshNetworkAround(lat: number, lon: number): Promise<void> {
     refreshedAt = { lat, lon };
     await network.refresh(lat, lon);
-    drawHazardLayers();
+    drawTags();
     await queue.flush();
     $("st-queue").textContent = String(queue.pending);
   }
 
+  rider.onError = gpsProblem;
   rider.onUpdate = (position) => {
-    const { latitude, longitude, accuracy } = position.coords;
-    $("st-gps").textContent = "±" + accuracy.toFixed(0) + " m";
-
-    const point: L.LatLngExpression = [latitude, longitude];
-    if (map) {
-      riderMarker ??= L.circleMarker(point, { radius: 7, color: "#ffffff", weight: 2, fillColor: "#0d0d0d", fillOpacity: 1 }).addTo(map);
-      riderMarker.setLatLng(point);
+    const raw = position.coords;
+    $("gps-status").hidden = true;
+    $("hud-gps").textContent = `GPS ±${Math.round(raw.accuracy)} m`;
+    $("hud-gps").parentElement!.classList.toggle("hud-weak", raw.accuracy > MAX_USABLE_ACCURACY_M);
+    // a cell-tower / Wi-Fi fix hundreds of metres off must not drive the guidance;
+    // the avatar still shows roughly where you are, dimmed, so the map is never frozen
+    if (raw.accuracy > MAX_USABLE_ACCURACY_M) {
+      avatarEl.classList.add("weak");
+      target = { lon: raw.longitude, lat: raw.latitude, heading: target?.heading ?? compass.headingDeg ?? 0 };
+      if (running) $("rg-text").textContent = `Weak GPS (±${Math.round(raw.accuracy)} m) - waiting for a better fix`;
+      return;
     }
+    avatarEl.classList.remove("weak");
+    estimate = smoothFix(estimate, { lon: raw.longitude, lat: raw.latitude, accuracyM: raw.accuracy, t: position.timestamp });
+    let { lon, lat } = estimate;
+    let snappedTravelled: number | undefined;
+    // on the route: show the rider on the road, not in the building next to it
+    if (plan) {
+      const snap = project(plan.route.geometry.coordinates, planCum, [lon, lat]);
+      if (snap.offM <= Math.max(25, estimate.accuracyM)) {
+        snappedTravelled = snap.travelled;
+        [lon, lat] = along(plan.route.geometry.coordinates, planCum, snap.travelled).point;
+      }
+    }
+    const latitude = lat;
+    const longitude = lon;
+    target = { lon, lat, heading: headingFor(snappedTravelled) ?? target?.heading ?? 0 };
     if (rideMap) {
-      rideMarker ??= L.marker(point, { icon: riderIcon(), interactive: false }).addTo(rideMap);
-      rideMarker.setLatLng(point);
-      updateRiderHeading();
-      if (running) rideMap.setView(point, rideMap.getZoom(), { animate: false });
+      accuracyCircle ??= rideMap.circle("#839958");
+      accuracyCircle.set([estimate.lon, estimate.lat], estimate.accuracyM);
     }
-    updateNavStrip();
 
+    dashcam.update(rider.speedMps * 3.6, latitude, longitude);
     if (running) {
       if (lastFix) {
-        const step = distanceM(lastFix.coords.latitude, lastFix.coords.longitude, latitude, longitude);
+        const step = distanceM(lastFix.coords.latitude, lastFix.coords.longitude, raw.latitude, raw.longitude);
         if (step < 200) ride.metres += step; // ignore GPS jumps
       }
-      // a mapped hazard round the corner, warned about before the camera can see it
+      updateGuide(longitude, latitude, estimate.accuracyM);
+      // a mapped pothole round the corner, warned about before the camera can see it
       const upcoming = network.upcoming(latitude, longitude, rider.headingDeg);
       if (upcoming) {
         ride.alerts++;
@@ -674,33 +942,95 @@ async function boot(): Promise<void> {
     }
     lastFix = position;
 
-    // half the fetch radius: re-download before the rider can outrun the data
     if (!refreshedAt || distanceM(refreshedAt.lat, refreshedAt.lon, latitude, longitude) > 1500) {
       void refreshNetworkAround(latitude, longitude);
     }
   };
-  rider.start();
+}
 
-  // first fix: centre the map and pull in what the network already knows
-  navigator.geolocation?.getCurrentPosition((position) => {
-    const { latitude, longitude } = position.coords;
-    map?.setView([latitude, longitude], 15);
-    void refreshNetworkAround(latitude, longitude);
+/** Load the water model once, in the background. */
+function ensureWaterModel(): Promise<void> {
+  waterLoading ??= waterModel.load(WATER_MODEL_URL).catch((err) => {
+    console.error(err);
+    $("hud-water").textContent = "water model failed";
   });
+  return waterLoading;
+}
 
-  const destinationInput = $<HTMLInputElement>("in-destination");
-  $("btn-destination").addEventListener("click", () => void searchDestination(destinationInput.value));
-  destinationInput.addEventListener("keydown", (event) => {
-    if ((event as KeyboardEvent).key === "Enter") void searchDestination(destinationInput.value);
-  });
+/** Settings: run both models on a photo the user picks, to see what the camera would see. */
+async function testPhoto(file: File): Promise<void> {
+  const out = $("photo-result");
+  out.textContent = "Loading models…";
+  const img = new Image();
+  img.src = URL.createObjectURL(file);
+  await img.decode();
+  await Promise.all([ensureDetector(), ensureWaterModel()]);
+  const water = await waterModel.analyse(img, 0.3);
+  const dets = detectorReady ? await detector.detect(img, img.naturalWidth, img.naturalHeight, engine.cfg.minScore) : [];
+  const verdict = water.fraction >= waterGate.cfg.minFraction ? "WATER ON THE ROAD" : "no water on the road";
+  out.textContent = `${verdict} · water ${(water.fraction * 100).toFixed(0)}% of the road area · potholes found: ${dets.length}`;
+  URL.revokeObjectURL(img.src);
+}
 
-  $("btn-start").addEventListener("click", startRide);
+/** Load the pothole model once, in the background; the ride works before it is ready. */
+function ensureDetector(): Promise<void> {
+  detectorLoading ??= detector
+    .load(MODEL_URL)
+    .then(() => {
+      detectorReady = true;
+      const label = "potholes only · " + detector.backend + " · " + detector.size + "px";
+      $("hud-model").textContent = label;
+      $("st-model").textContent = label;
+    })
+    .catch((err) => {
+      console.error(err);
+      const msg = "detector failed: " + (err instanceof Error ? err.message : String(err));
+      $("hud-model").textContent = msg;
+      $("st-model").textContent = msg;
+    });
+  return detectorLoading;
+}
+
+// -------------------------------------------------------------------- boot
+async function boot(): Promise<void> {
+  applySettings();
+  bindSettings();
+
   $("btn-end").addEventListener("click", endRide);
-  $("btn-home").addEventListener("click", () => show("home"));
-  $("btn-settings").addEventListener("click", () => show("settings"));
-  $("btn-settings-back").addEventListener("click", () => show("home"));
+  $("btn-home").addEventListener("click", () => show("planner"));
+  $("btn-sum-report").addEventListener("click", () => {
+    show("planner");
+    $("btn-report").click();
+    const radio = document.querySelector<HTMLInputElement>('input[name="rep-kind"][value="WATER_OBSERVED"]');
+    if (radio) radio.checked = true;
+  });
+  $("btn-planner-camera").addEventListener("click", () => void startRide());
+  $<HTMLInputElement>("photo-test").addEventListener("change", (e) => {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (file) void testPhoto(file).catch((err) => ($("photo-result").textContent = String(err)));
+  });
+  const setMode = (mode: RideMode) => {
+    rideMode = mode;
+    try {
+      localStorage.setItem(RIDE_MODE_KEY, mode);
+    } catch {
+      /* this session only */
+    }
+    $("mode-camera").setAttribute("aria-pressed", String(mode === "camera"));
+    $("mode-pocket").setAttribute("aria-pressed", String(mode === "pocket"));
+    $("btn-planner-camera").textContent = mode === "pocket" ? "Pocket ride" : "Camera ride";
+  };
+  $("mode-camera").addEventListener("click", () => setMode("camera"));
+  $("mode-pocket").addEventListener("click", () => setMode("pocket"));
+  setMode(rideMode);
+  $("btn-camera").addEventListener("click", () => {
+    void ensureDetector();
+    show("settings");
+  });
+  $("btn-ride-settings").addEventListener("click", () => show("settings"));
+  $("btn-settings-back").addEventListener("click", () => show(running ? "ride" : "planner"));
   $("btn-incident").addEventListener("click", () => {
-    const clip = dashcam.saveIncident(rider.position);
+    const clip = dashcam.saveIncident(rider.position, "saved by rider");
     showBanner(clip ? "Incident saved" : "Nothing buffered yet", clip ? clip.seconds + "s of footage" : "");
     voice.say(clip ? "Footage saved" : "Nothing recorded yet");
   });
@@ -716,27 +1046,12 @@ async function boot(): Promise<void> {
     $("st-queue").textContent = String(queue.pending);
   });
 
-  try {
-    await detector.load("/models/pathfinder.onnx");
-    $("st-model").textContent = "ready · " + detector.backend + " · " + detector.size + "px";
-    $<HTMLButtonElement>("btn-start").disabled = false;
-  } catch (err) {
-    console.error(err);
-    $("st-model").textContent = "load failed";
-    // phones have no hover tooltip and usually no attached devtools, so the
-    // only way to see this error is printing it directly on the page
-    const banner = document.createElement("p");
-    banner.className = "fineprint";
-    banner.style.color = "#ff4d4d";
-    banner.style.whiteSpace = "pre-wrap";
-    banner.style.wordBreak = "break-word";
-    banner.textContent = "Model load error: " + (err instanceof Error ? err.message : String(err));
-    $("st-model").closest(".status-grid")?.after(banner);
-  }
-
   if ("serviceWorker" in navigator && import.meta.env.PROD) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   }
+
+  onPlanChange(setPlan);
+  await initPlanner({ show: (name) => show(name as ScreenName), startRide: () => void startRide() });
 }
 
 void boot();

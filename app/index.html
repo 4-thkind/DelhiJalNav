@@ -2,64 +2,263 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-    <meta name="theme-color" content="#0b0f14" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0A3323" />
+    <meta name="description" content="Recent water reports. Better route decisions. Explainable monsoon route advisories for a pilot Delhi corridor." />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="icon" href="/icons/icon-192.png" />
-    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
-    <title>PathFinder AR</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16x16.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+    <title>DilliJalNav Edge</title>
   </head>
   <body>
-    <!-- ================= HOME ================= -->
-    <section id="screen-home" class="screen">
-      <header class="brand">
-        <div class="brand-mark">PF</div>
-        <div>
-          <h1>PathFinder AR</h1>
-          <p>Road-hazard co-pilot for two-wheelers</p>
+    <!-- ================= PLANNER: map-first (no permissions needed) ================= -->
+    <section id="screen-planner" class="app-shell">
+      <div id="plan-map" class="plan-map" role="region" aria-label="Route map"></div>
+
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">DJ</span>
+          <span class="brand-name">DilliJalNav <span>Edge</span></span>
+        </div>
+        <div class="chips" aria-live="polite">
+          <span id="mode-badge" class="chip">…</span>
+          <span id="weather-chip" class="chip"></span>
+          <span id="demo-clock" class="chip"></span>
+        </div>
+        <div class="top-actions">
+          <div class="mode-pill" role="group" aria-label="Ride mode">
+            <button id="mode-camera" type="button" aria-pressed="true" title="Phone on the handlebar: camera watches the road">Camera</button>
+            <button id="mode-pocket" type="button" aria-pressed="false" title="Phone in your pocket: camera off, voice guidance and flood-zone warnings">Pocket</button>
+          </div>
+          <button id="btn-voice-toggle" class="tb-btn" type="button" aria-pressed="true">Sound on</button>
+          <button id="btn-lang" class="tb-btn" type="button">हिं</button>
         </div>
       </header>
 
-      <div id="home-map" class="map"></div>
+      <!-- guidance banner (route preview) -->
+      <div id="guidance" class="guidance" hidden role="status" tabindex="0" aria-label="Next maneuver - tap for all steps">
+        <div class="g-main">
+          <span id="g-arrow" class="g-arrow">↑</span>
+          <div class="g-body">
+            <span id="g-dist" class="g-dist"></span>
+            <span id="g-text" class="g-text"></span>
+          </div>
+        </div>
+        <div id="lanes" class="lanes" hidden aria-label="Lane guidance"></div>
+        <div id="g-then" class="g-then"></div>
+      </div>
+      <div id="cue-sheet" class="cue-sheet" hidden>
+        <ol id="cue-list" class="cue-list"></ol>
+      </div>
+      <span id="sim-label" class="sim-label" hidden data-i18n="simulated">Simulated drive · demo</span>
 
-      <div class="status-grid">
-        <div class="status"><span class="status-key">Detector</span><b id="st-model">loading…</b></div>
-        <div class="status"><span class="status-key">GPS</span><b id="st-gps">waiting</b></div>
-        <div class="status"><span class="status-key">Network hazards</span><b id="st-network">—</b></div>
-        <div class="status"><span class="status-key">Queued reports</span><b id="st-queue">0</b></div>
+      <div id="reroute-notice" class="reroute-notice" hidden role="alert"></div>
+      <div id="pick-banner" class="pick-banner" hidden role="status">
+        <span id="pick-text">Tap the map</span>
+        <button id="pick-cancel" class="secondary small" type="button">Cancel</button>
       </div>
 
-      <div class="dest-row">
-        <input id="in-destination" type="search" placeholder="Where to? (optional)" autocomplete="off" />
-        <button id="btn-destination" class="ghost small">Set</button>
+      <button id="btn-recenter" class="recenter" type="button" hidden>Re-center</button>
+      <div class="fab-stack">
+        <button id="btn-planner-camera" class="fab fab-camera" type="button">Camera ride</button>
+        <button id="fab-report" class="fab" type="button">Report water</button>
       </div>
-      <p id="dest-status" class="fineprint"></p>
-      <ul id="dest-results" class="dest-results hidden"></ul>
 
-      <button id="btn-start" class="primary" disabled>Start Ride</button>
-      <button id="btn-settings" class="ghost">Settings &amp; calibration</button>
-      <p class="fineprint">
-        Video is analysed on this device and never uploaded. Only hazard
-        coordinates are shared with the network.
-      </p>
+      <button id="dock-open" class="dock-open" type="button" aria-controls="sheet" aria-expanded="false">
+        <span class="dock-open-arrow" aria-hidden="true">▲</span> Route <span id="dock-eta" class="dock-eta"></span>
+      </button>
+      <aside id="sheet" class="sheet" aria-label="Route planner">
+        <div class="dock-head">
+          <b>Route</b>
+          <button id="dock-hide" class="dock-hide" type="button" aria-controls="sheet">Hide <span aria-hidden="true">▼</span></button>
+        </div>
+        <div class="sheet-body">
+          <div class="role-row">
+            <span class="eyebrow">Planning as</span>
+            <b id="role-label"></b>
+            <button id="btn-role" class="link" type="button">Change</button>
+          </div>
+          <div id="vehicle-row" class="vehicle-row" role="group" aria-label="Vehicle"></div>
+          <div class="od" role="group" aria-label="Start and destination">
+            <div class="od-fields">
+              <div class="od-row"><span class="od-key od-from">From</span><button id="od-from" class="od-field" type="button">…</button></div>
+              <div class="od-row"><span class="od-key od-to">To</span><button id="od-to" class="od-field" type="button">…</button></div>
+            </div>
+            <button id="od-swap" class="od-swap secondary" type="button" aria-label="Swap start and destination">⇅</button>
+          </div>
+          <button id="btn-preset" class="link" type="button" hidden data-i18n="presetRoute">Preset route</button>
+          <button id="btn-demo-water" class="secondary small" type="button" hidden data-i18n="demoWater">Demo: camera sees water at the underpass</button>
+
+          <div id="decision-card" class="card" aria-live="polite"></div>
+          <p id="update-note" class="fineprint" aria-live="polite"></p>
+
+          <div class="actions">
+            <button id="btn-ride" class="go" type="button" data-i18n="startRide">Start ride</button>
+            <button id="btn-nav" class="secondary" type="button" data-i18n="startNav">Preview route</button>
+          </div>
+          <ul id="route-cards" class="route-cards"></ul>
+          <div class="actions">
+            <button id="btn-why" class="secondary" type="button" data-i18n="why">Why this route?</button>
+            <button id="btn-report" class="secondary" type="button" data-i18n="report">Report conditions</button>
+            <button id="btn-compare" class="secondary" type="button" data-i18n="compare">Compare routes</button>
+            <button id="btn-share" class="secondary" type="button" data-i18n="share">Share trip</button>
+            <button id="btn-sos" class="sos" type="button" data-i18n="sos">SOS</button>
+          </div>
+          <p id="queue-count" class="fineprint"></p>
+          <button id="btn-camera" class="link" type="button" data-i18n="camera">Camera calibration</button>
+          <p class="fineprint">Map data © OpenStreetMap contributors · Pilot: Minto Bridge underpass only.</p>
+        </div>
+      </aside>
     </section>
 
-    <!-- ================= RIDE ================= -->
-    <section id="screen-ride" class="screen hidden">
-      <!-- top half: the road, with hazards drawn over it -->
+    <!-- ================= WELCOME: who are you? ================= -->
+    <section id="screen-welcome" class="overlay hidden" aria-label="Choose how you travel">
+      <div class="overlay-panel welcome">
+        <div class="brand big">
+          <span class="brand-mark" aria-hidden="true">DJ</span>
+          <span class="brand-name">DilliJalNav <span>Edge</span></span>
+        </div>
+        <h2>How are you travelling today?</h2>
+        <p class="muted">We use this to pick your vehicle and how routes are explained. You can change it any time.</p>
+        <div class="role-list">
+          <button type="button" class="role-option" data-role="rider"><b>Two-wheeler rider</b><span>Bike or scooter. Underpasses with reported water are always avoided. Camera ride available.</span></button>
+          <button type="button" class="role-option" data-role="driver"><b>Car or cab driver</b><span>Route around reported waterlogging, with the time it costs.</span></button>
+          <button type="button" class="role-option" data-role="auto"><b>Auto-rickshaw driver</b><span>Low clearance: reported water is avoided.</span></button>
+          <button type="button" class="role-option" data-role="commuter"><b>Commuter planning a trip</b><span>Check the route before you leave.</span></button>
+          <button type="button" class="role-option" data-role="reporter"><b>Community reporter</b><span>Report water you can see from a safe place.</span></button>
+        </div>
+        <p class="fineprint">No account, no location needed to plan. Camera and GPS are asked for only when you start a ride.</p>
+      </div>
+    </section>
+
+    <!-- ================= PLACE: edit start / destination ================= -->
+    <section id="screen-place" class="overlay hidden" aria-label="Choose a place">
+      <div class="overlay-panel">
+        <h2 id="place-title">Change destination</h2>
+        <form id="place-form" class="place-form" role="search">
+          <input id="place-q" type="search" placeholder="Search a place near Connaught Place" autocomplete="off" maxlength="100" />
+          <button class="primary" type="submit">Search</button>
+        </form>
+        <div class="actions">
+          <button id="place-mine" class="secondary" type="button">Use my location</button>
+          <button id="place-pick" class="secondary" type="button">Pick on map</button>
+        </div>
+        <p id="place-status" class="fineprint" aria-live="polite"></p>
+        <ul id="place-results" class="place-results"></ul>
+        <h3>Landmarks in the pilot area</h3>
+        <div id="place-landmarks" class="place-landmarks"></div>
+        <p class="fineprint">Search covers 8 km around the Minto Bridge pilot. Place data © OpenStreetMap contributors (Nominatim).</p>
+        <button id="place-back" class="secondary" type="button" data-i18n="back">Back</button>
+      </div>
+    </section>
+
+    <!-- ================= REPORT (overlay) ================= -->
+    <section id="screen-report" class="overlay hidden" aria-label="Report conditions">
+      <div class="overlay-panel">
+        <h2 data-i18n="report">Report conditions</h2>
+        <p class="fineprint">Report only while stopped somewhere safe. Never go into water to check it.</p>
+
+        <div id="rep-form">
+          <label>Details - type or speak (Hindi / English / Hinglish)
+            <textarea id="rep-text" maxlength="1000" rows="3" placeholder="e.g. Minto Bridge ke neeche 3 foot paani bhara hai"></textarea>
+          </label>
+          <div class="actions">
+            <button id="btn-mic" class="secondary" type="button" data-i18n="speak">Speak</button>
+            <button id="btn-autofill" class="secondary" type="button" data-i18n="autofill">Auto-fill from text</button>
+          </div>
+          <p id="rep-draft-info" class="draft-info" aria-live="polite"></p>
+          <label>Place
+            <select id="rep-hotspot"></select>
+          </label>
+          <fieldset>
+            <legend>What did you see?</legend>
+            <label class="row"><input type="radio" name="rep-kind" value="WATER_OBSERVED" /> <span data-kind="WATER_OBSERVED">Water on the road</span></label>
+            <label class="row"><input type="radio" name="rep-kind" value="ROAD_BLOCKED_REPORTED" /> <span data-kind="ROAD_BLOCKED_REPORTED">Road blocked</span></label>
+            <label class="row"><input type="radio" name="rep-kind" value="NO_WATER_OBSERVED" /> <span data-kind="NO_WATER_OBSERVED">No water seen</span></label>
+            <label class="row"><input type="radio" name="rep-kind" value="UNSURE" /> <span data-kind="UNSURE">Not sure</span></label>
+          </fieldset>
+          <div class="two-col">
+            <label><span data-i18n="depth">Water depth (your estimate)</span>
+              <select id="rep-depth">
+                <option value="">Not given</option>
+                <option value="ankle" data-depth="ankle">Ankle</option>
+                <option value="knee" data-depth="knee">Knee</option>
+                <option value="waist" data-depth="waist">Waist</option>
+                <option value="submerged" data-depth="submerged">Submerged</option>
+              </select>
+            </label>
+            <label><span data-i18n="stalled">Stalled vehicles seen</span>
+              <input id="rep-stalled" type="number" min="0" max="50" step="1" inputmode="numeric" />
+            </label>
+          </div>
+          <label>Demo contributor (synthetic)
+            <select id="rep-contributor">
+              <option value="demo-a">Synthetic contributor A</option>
+              <option value="demo-b">Synthetic contributor B</option>
+              <option value="demo-c">Synthetic contributor C</option>
+            </select>
+          </label>
+          <p class="fineprint">Text is sent to the server (and to Amazon Bedrock if enabled). Your location is not collected - you pick the place.</p>
+          <button id="btn-rep-next" class="primary" type="button" data-i18n="next">Review</button>
+        </div>
+
+        <div id="rep-review" class="card" hidden>
+          <div id="rep-review-body"></div>
+          <div class="actions">
+            <button id="btn-rep-submit" class="primary" type="button" data-i18n="submit">Submit report</button>
+            <button id="btn-rep-edit" class="secondary" type="button" data-i18n="edit">Edit</button>
+          </div>
+        </div>
+        <p id="rep-error" class="error" role="alert"></p>
+        <ul id="rep-results" class="results" aria-live="polite"></ul>
+        <button id="btn-rep-back" class="secondary" type="button" data-i18n="back">Back</button>
+      </div>
+    </section>
+
+    <!-- ================= EVIDENCE (overlay) ================= -->
+    <section id="screen-evidence" class="overlay hidden" aria-label="Why this route">
+      <div class="overlay-panel">
+        <h2 data-i18n="why">Why this route?</h2>
+        <div id="evidence-body" class="card"></div>
+        <button id="btn-ev-back" class="secondary" type="button" data-i18n="back">Back</button>
+      </div>
+    </section>
+
+    <!-- ================= SOS (overlay) ================= -->
+    <section id="screen-sos" class="overlay hidden" aria-label="Emergency">
+      <div class="overlay-panel">
+        <h2>Emergency and breakdown help</h2>
+        <p class="fineprint">Calls go through your phone's dialer. Public Indian / Delhi helplines - verify locally before relying on them.</p>
+        <a class="sos-link" href="tel:112"><b>112</b> National emergency</a>
+        <a class="sos-link" href="tel:1095"><b>1095</b> Delhi Traffic Police helpline</a>
+        <a class="sos-link" href="tel:1916"><b>1916</b> Delhi Jal Board helpline</a>
+        <p class="fineprint">Stuck near water: switch off the engine, do not restart a stalled engine in water, move to higher ground.</p>
+        <button id="btn-sos-back" class="secondary" type="button" data-i18n="back">Back</button>
+      </div>
+    </section>
+
+    <!-- ================= RIDE: camera on top, route below ================= -->
+    <section id="screen-ride" class="screen hidden ride">
       <div class="ride-camera">
         <video id="cam" playsinline muted autoplay></video>
         <canvas id="overlay"></canvas>
+        <p id="cam-off" class="cam-off" hidden>Camera off - map-only ride. Allow camera access over HTTPS to see potholes ahead.</p>
 
         <div class="hud-top">
           <div class="hud-chip"><b id="hud-speed">0</b><span>km/h</span></div>
           <div class="hud-chip"><b id="hud-fps">0</b><span>fps</span></div>
-          <div class="hud-chip"><b id="hud-hazards">0</b><span>seen</span></div>
+          <div class="hud-chip"><b id="hud-hazards">0</b><span>potholes seen</span></div>
           <div class="hud-chip" id="hud-rec"><b>REC</b><span id="hud-buffer">0s</span></div>
+          <div class="hud-chip"><span id="hud-model">detector loading</span></div>
+          <div class="hud-chip"><span id="hud-water">water model loading</span></div>
+          <div class="hud-chip"><span id="hud-gps">GPS waiting</span></div>
         </div>
 
-        <div id="alert-banner" class="alert-banner hidden">
-          <span class="alert-icon">&#9888;</span>
+        <div id="alert-banner" class="alert-banner hidden" role="alert">
+          <span class="alert-icon" aria-hidden="true">!</span>
           <div>
             <strong id="alert-title">POTHOLE AHEAD</strong>
             <span id="alert-sub">DISTANCE: 30 m</span>
@@ -67,49 +266,64 @@
         </div>
       </div>
 
-      <!-- bottom half: where you are and where you are going -->
       <div class="ride-nav">
-        <div id="ride-map" class="ride-map"></div>
-        <div class="nav-strip">
-          <div class="nav-dest">
-            <span class="status-key">Destination</span>
-            <b id="nav-name">No destination set</b>
+        <div id="ride-guide" class="ride-guide">
+          <span id="rg-arrow" class="rg-arrow">↑</span>
+          <div class="rg-body">
+            <b id="rg-dist">—</b>
+            <span id="rg-text">Waiting for GPS…</span>
           </div>
-          <div class="nav-eta">
-            <b id="nav-distance">&mdash;</b>
-            <span id="nav-eta">&mdash;</span>
+          <div class="rg-eta">
+            <b id="rg-left">—</b>
+            <span id="rg-dest"></span>
           </div>
         </div>
+        <p id="ride-water" class="ride-water" hidden></p>
+        <p id="gps-status" class="gps-status" hidden role="alert"></p>
+        <p id="pocket-note" class="pocket-note" hidden>Pocket mode · camera off · voice turn-by-turn and flood-zone warnings · keep earphones in</p>
+        <div id="ride-map" class="ride-map"></div>
       </div>
 
       <div class="hud-bottom">
-        <button id="btn-incident" class="danger">Save clip</button>
-        <button id="btn-mute" class="ghost small">Mute</button>
-        <button id="btn-end" class="ghost small">End ride</button>
+        <button id="btn-incident" class="danger" type="button">Save clip</button>
+        <button id="btn-mute" class="secondary small" type="button">Mute</button>
+        <button id="btn-ride-settings" class="secondary small" type="button">Calibrate</button>
+        <button id="btn-end" class="secondary small" type="button">End ride</button>
       </div>
     </section>
 
     <!-- ================= SUMMARY ================= -->
-    <section id="screen-summary" class="screen hidden">
+    <section id="screen-summary" class="screen hidden dark">
       <h2>Ride summary</h2>
       <div class="status-grid">
         <div class="status"><span class="status-key">Duration</span><b id="sum-duration">—</b></div>
         <div class="status"><span class="status-key">Distance</span><b id="sum-distance">—</b></div>
-        <div class="status"><span class="status-key">Hazards detected</span><b id="sum-hazards">—</b></div>
+        <div class="status"><span class="status-key">Potholes detected</span><b id="sum-hazards">—</b></div>
         <div class="status"><span class="status-key">Warnings given</span><b id="sum-alerts">—</b></div>
+        <div class="status"><span class="status-key">Possible water (camera cue)</span><b id="sum-water">—</b></div>
       </div>
-      <h3>Saved footage</h3>
+      <div id="sum-water-ask" class="card" hidden>
+        <p>The camera flagged possible water on this ride. It is an experimental cue and can be wrong (wet road, shadow, glare).
+          If you saw water yourself, report it - your report is what changes routes for others.</p>
+        <button id="btn-sum-report" class="primary" type="button">Report water I saw</button>
+      </div>
+      <h3>Saved footage (in memory - download to keep)</h3>
       <div id="clip-list" class="clip-list"><p class="fineprint">No incidents saved this ride.</p></div>
-      <button id="btn-home" class="primary">Done</button>
+      <button id="btn-home" class="primary" type="button">Done</button>
     </section>
 
     <!-- ================= SETTINGS ================= -->
-    <section id="screen-settings" class="screen hidden">
-      <h2>Settings &amp; calibration</h2>
+    <section id="screen-settings" class="screen hidden dark">
+      <h2>Camera settings and calibration</h2>
       <p class="fineprint">
-        Distance estimates assume a flat road. Match these to your bike and mount
-        so warnings arrive at the right moment.
+        The camera runs two models: a pothole detector (YOLOv8n) and a water segmentation model (SegFormer-b0).
+        Distance and depth estimates assume a flat road; match these to your bike and mount so warnings arrive at the right moment.
       </p>
+      <label>Test a photo (water and potholes)
+        <input id="photo-test" type="file" accept="image/*" />
+      </label>
+      <p id="photo-result" class="fineprint" aria-live="polite"></p>
+      <p class="fineprint">Detector: <b id="st-model">not loaded</b> · Queued pothole reports: <b id="st-queue">0</b></p>
       <label>Camera height above road <output id="out-height">1.00 m</output>
         <input id="in-height" type="range" min="0.5" max="1.6" step="0.05" value="1" />
       </label>
@@ -129,8 +343,9 @@
         <input id="in-buffer" type="range" min="30" max="300" step="30" value="180" />
       </label>
       <label class="row"><input id="in-speech" type="checkbox" checked /> Spoken warnings</label>
-      <label class="row"><input id="in-upload" type="checkbox" checked /> Share hazards with the network</label>
-      <button id="btn-settings-back" class="primary">Back</button>
+      <label class="row"><input id="in-neural" type="checkbox" checked /> Natural voice (online, Python edge-tts on the server; phone voice when offline)</label>
+      <label class="row"><input id="in-upload" type="checkbox" /> Share pothole locations with the legacy map (off by default)</label>
+      <button id="btn-settings-back" class="primary" type="button">Back</button>
     </section>
 
     <script type="module" src="/src/main.ts"></script>
