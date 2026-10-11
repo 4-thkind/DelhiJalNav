@@ -166,6 +166,12 @@ Resources:
             ApiId: !Ref Api
             Method: GET
             Path: /v1/weather
+        Tts:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Method: GET
+            Path: /v1/tts
         DemoCtl:
           Type: HttpApi
           Properties:
