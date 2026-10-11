@@ -43,7 +43,8 @@ export class Detector {
     // WebGPU is several times faster on modern Android; wasm is the fallback
     // that always works.
     const failures: string[] = [];
-    const providers = navigator.gpu ? (["webgpu", "wasm"] as const) : (["wasm"] as const);
+    // wasm only: two models on WebGPU at once hang some phones; wasm is slower but always runs
+    const providers = ["wasm"] as const;
 
     for (const ep of providers) {
       try {
