@@ -13,7 +13,7 @@ import onnxruntime as ort
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent
-MODEL = ROOT.parent / "app" / "public" / "models" / "pathfinder.onnx"
+MODEL = ROOT.parent / "app" / "public" / "models" / "pothole-yolov8n.onnx"
 CLASSES = 1  # keep in sync with CLASS_NAMES in app/src/types.ts
 
 session = ort.InferenceSession(str(MODEL), providers=["CPUExecutionProvider"])

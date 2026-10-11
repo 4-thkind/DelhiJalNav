@@ -1,0 +1,20 @@
+# Target 4-class road hazard model (not trained yet - the shipped app model is
+# pothole-only, ml/data/data.yaml). Train with:
+#   python ml/train.py --data ml/hazards4.yaml
+# Images/labels go under ml/data4/{train,val}/{images,labels} in YOLO format,
+# merged from the sources below after class remapping.
+#
+# Sources - CHECK EACH LICENCE before training or shipping:
+#   pothole         RDD2022 India subset, class D40 (CC BY-SA 4.0); Roboflow pothole sets (per-dataset licence)
+#   waterlogging    FloodNet (flooded road scenes; research licence); Roboflow road flood / puddle sets
+#   stalled_vehicle IDD - India Driving Dataset, IIIT Hyderabad (registration; research / non-commercial terms)
+#   road_blockage   IDD obstacles and barricades; Lost and Found (CC BY-NC-SA, small lane obstacles)
+# Order must match CLASS_NAMES in app/src/types.ts when this model replaces the pothole one.
+path: data4
+train: train/images
+val: val/images
+names:
+  0: pothole
+  1: waterlogging
+  2: stalled_vehicle
+  3: road_blockage

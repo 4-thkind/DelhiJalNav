@@ -10,7 +10,7 @@ from ultralytics import YOLO
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data" / "data.yaml"
-WEB_MODEL = ROOT.parent / "app" / "public" / "models" / "pathfinder.onnx"
+WEB_MODEL = ROOT.parent / "app" / "public" / "models" / "pothole-yolov8n.onnx"
 
 
 def main() -> None:
@@ -19,20 +19,22 @@ def main() -> None:
     ap.add_argument("--imgsz", type=int, default=416)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--device", default="0")
+    ap.add_argument("--data", default=str(DATA), help="dataset yaml; ml/hazards4.yaml for the 4-class target")
     args = ap.parse_args()
 
-    if not DATA.exists():
-        raise SystemExit("run `python ml/prepare_data.py` first")
+    data = Path(args.data)
+    if not data.exists():
+        raise SystemExit(f"{data} not found - run `python ml/prepare_data.py` first")
 
     model = YOLO("yolov8n.pt")
     model.train(
-        data=str(DATA),
+        data=str(data),
         epochs=args.epochs,
         imgsz=args.imgsz,
         batch=args.batch,
         device=args.device,
         project=str(ROOT / "runs"),
-        name="pathfinder",
+        name="pothole-yolov8n",
         exist_ok=True,
         patience=25,
         # handheld phone footage: dim, shaky, and never mirrored
@@ -40,7 +42,7 @@ def main() -> None:
         hsv_h=0.015, hsv_s=0.7, hsv_v=0.5, mosaic=1.0, erasing=0.2,
     )
 
-    best = ROOT / "runs" / "pathfinder" / "weights" / "best.pt"
+    best = ROOT / "runs" / "pothole-yolov8n" / "weights" / "best.pt"
     onnx = Path(YOLO(str(best)).export(format="onnx", imgsz=args.imgsz, opset=12, simplify=True, dynamic=False))
     WEB_MODEL.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(onnx, WEB_MODEL)
