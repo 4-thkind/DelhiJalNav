@@ -9,7 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-os.environ["PATHFINDER_DB"] = str(Path(tempfile.mkdtemp()) / "test.db")
+os.environ["DILLIJALNAV_DB"] = str(Path(tempfile.mkdtemp()) / "test.db")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient  # noqa: E402
