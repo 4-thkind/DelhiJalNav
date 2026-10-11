@@ -1,4 +1,4 @@
-# Getting PathFinder AR onto an Android phone
+# Getting DilliJalNav Edge onto an Android phone
 
 Three ways, in the order you will actually need them.
 
