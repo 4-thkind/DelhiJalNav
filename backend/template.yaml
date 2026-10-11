@@ -1,0 +1,335 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  DilliJalNav Edge - evidence-aware monsoon route advisories (AWS demo stack).
+  CloudFront serves the PWA from a private S3 bucket and forwards /v1/* to an
+  HTTP API backed by one Lambda function and one DynamoDB table.
+
+Parameters:
+  AppMode:
+    Type: String
+    Default: aws-demo
+    AllowedValues: [aws-demo]
+    Description: >
+      Only the isolated demo namespace is deployable from this template. live-pilot
+      needs a Cognito JWT authorizer on the write routes first (see docs/DEPLOYMENT.md).
+  DemoAdminKey:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: Secret for demo reviewer actions and /v1/demo/control. Never ship it in the frontend.
+  PseudonymSalt:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: HMAC salt for contributor pseudonyms.
+  GoogleMapsApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: >
+      Optional. Google Routes API key for traffic-aware live routes (two-wheeler mode);
+      empty means public OSRM. Restrict the key to the Routes API.
+  BuildId:
+    Type: String
+    Default: dev
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+  BedrockModelId:
+    Type: String
+    Default: ""
+    Description: >
+      Optional Bedrock model or inference-profile ID for Hinglish report drafts. Verify it is
+      enabled in this account and region. Empty = deterministic rules extractor only.
+  AllowedOrigin:
+    Type: String
+    Default: http://localhost:5173
+    Description: Extra origin allowed to call the API directly (CloudFront itself needs no CORS).
+
+Conditions:
+  HasBedrock: !Not [!Equals [!Ref BedrockModelId, ""]]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [arm64]
+    MemorySize: 256
+    Timeout: 15
+
+Resources:
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      TimeToLiveSpecification:
+        AttributeName: cleanupAt
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: false
+
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+      CorsConfiguration:
+        AllowOrigins: [!Ref AllowedOrigin]
+        AllowMethods: [GET, POST, OPTIONS]
+        AllowHeaders: [content-type, x-demo-contributor, x-demo-admin-key, authorization]
+        MaxAge: 600
+
+  # Three functions, one codebase (handlers/api.py routes by path). Separate functions give
+  # separate CloudWatch log groups and least-privilege IAM: only the draft function can call
+  # Bedrock, and it has no table access at all.
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Reads, route comparison, reviews, weather context, demo control
+      CodeUri: src/
+      Handler: handlers/api.handler
+      Environment:
+        Variables:
+          APP_MODE: !Ref AppMode
+          TABLE_NAME: !Ref Table
+          DEMO_ADMIN_KEY: !Ref DemoAdminKey
+          PSEUDONYM_SALT: !Ref PseudonymSalt
+          BUILD_ID: !Ref BuildId
+          ROUTE_PROVIDER: reviewed-fixtures
+          EVIDENCE_FRESHNESS_MINUTES: "30"
+          HAZARD_POLL_SECONDS: "15"
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          GOOGLE_MAPS_API_KEY: !Ref GoogleMapsApiKey
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem     # reviews + demo control
+                - dynamodb:Query
+                - dynamodb:Scan        # demo namespace reset only
+                - dynamodb:DeleteItem  # demo namespace reset only
+              Resource: !GetAtt Table.Arn
+      Events:
+        Status:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Method: GET
+            Path: /v1/status
+        Hotspots:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Method: GET
+            Path: /v1/hotspots
+        Hazards:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Method: GET
+            Path: /v1/hazards
+        Evidence:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Method: GET
+            Path: /v1/hotspots/{id}/evidence
+        Compare:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Method: POST
+            Path: /v1/routes/compare
+        Review:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Method: POST
+            Path: /v1/reviews
+        Geocode:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Method: GET
+            Path: /v1/geocode
+        Weather:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Method: GET
+            Path: /v1/weather
+        DemoCtl:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Method: POST
+            Path: /v1/demo/control
+
+  IngestReportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: POST /v1/observations - validation, idempotency, transactional state update
+      CodeUri: src/
+      Handler: handlers/api.handler
+      Environment:
+        Variables:
+          APP_MODE: !Ref AppMode
+          TABLE_NAME: !Ref Table
+          PSEUDONYM_SALT: !Ref PseudonymSalt
+          BUILD_ID: !Ref BuildId
+          EVIDENCE_FRESHNESS_MINUTES: "30"
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:Query]
+              Resource: !GetAtt Table.Arn
+      Events:
+        Observe:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Method: POST
+            Path: /v1/observations
+
+  ReportDraftFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: POST /v1/report-drafts - Bedrock Hinglish extraction with 2 s circuit breaker to rules
+      CodeUri: src/
+      Handler: handlers/api.handler
+      Environment:
+        Variables:
+          APP_MODE: !Ref AppMode
+          TABLE_NAME: !Ref Table   # client is created but never called by this route
+          PSEUDONYM_SALT: !Ref PseudonymSalt
+          BUILD_ID: !Ref BuildId
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+      Policies:
+        - !If
+          - HasBedrock
+          - Statement:
+              - Effect: Allow
+                Action: [bedrock:InvokeModel]
+                # ponytail: wildcard because model IDs and inference profiles vary by region; scope to the chosen ARN once fixed
+                Resource: "*"
+          - !Ref AWS::NoValue
+      Events:
+        Drafts:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Method: POST
+            Path: /v1/report-drafts
+
+  ApiFunctionLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ApiFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+  IngestReportFunctionLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${IngestReportFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+  ReportDraftFunctionLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ReportDraftFunction}
+      RetentionInDays: !Ref LogRetentionDays
+
+  # TransactWriteItems is authorised per contained action (PutItem/ConditionCheckItem),
+  # so no separate transaction permission is required.
+
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+
+  SiteOac:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-site
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: DilliJalNav Edge
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        PriceClass: PriceClass_200
+        Origins:
+          - Id: site
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt SiteOac.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+          - Id: api
+            DomainName: !Sub ${Api}.execute-api.${AWS::Region}.amazonaws.com
+            CustomOriginConfig: { OriginProtocolPolicy: https-only }
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6          # Managed-CachingOptimized
+        CacheBehaviors:
+          - PathPattern: /v1/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad        # Managed-CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # Managed-AllViewerExceptHostHeader
+        # No CustomErrorResponses: they apply to every origin and would turn API 403s into HTML.
+        # The PWA is a single page served at /, so it needs no deep-link fallback.
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub ${SiteBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+
+Outputs:
+  AppUrl:
+    Value: !Sub https://${Distribution.DomainName}
+  ApiUrl:
+    Value: !Sub https://${Api}.execute-api.${AWS::Region}.amazonaws.com
+  SiteBucketName:
+    Value: !Ref SiteBucket
+  TableName:
+    Value: !Ref Table
+  FunctionName:
+    Value: !Ref ApiFunction
+  IngestFunctionName:
+    Value: !Ref IngestReportFunction
+  DraftFunctionName:
+    Value: !Ref ReportDraftFunction
+  DistributionId:
+    Value: !Ref Distribution
