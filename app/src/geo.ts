@@ -20,7 +20,8 @@ export interface NetworkHazard extends HazardReport {
 }
 
 const EARTH_R = 6371000;
-const QUEUE_KEY = "pathfinder.queue";
+const QUEUE_KEY = "dillijalnav.legacyPotholeQueue";
+const LEGACY_QUEUE_KEY = "pathfinder.queue";
 const rad = (d: number) => (d * Math.PI) / 180;
 
 export function distanceM(aLat: number, aLon: number, bLat: number, bLon: number): number {
@@ -45,22 +46,31 @@ export function angleDelta(a: number, b: number): number {
   return ((b - a + 540) % 360) - 180;
 }
 
+/** Fixes worse than this are shown but never used to estimate speed or heading. */
+const MAX_ESTIMATE_ACCURACY_M = 50;
+
 export class RideLocation {
   position?: GeolocationPosition;
   private watchId?: number;
+  /** The last fix good enough to estimate speed and heading from. */
   private previous?: GeolocationPosition;
   /** Metres per second. Falls back to a positional estimate where the GPS gives none. */
   speedMps = 0;
   headingDeg = 0;
   onUpdate?: (position: GeolocationPosition) => void;
+  /** Location off, denied, no signal or timed out - shown to the rider, never only logged. */
+  onError?: (err: GeolocationPositionError) => void;
 
   start(): void {
     if (this.watchId !== undefined || !("geolocation" in navigator)) return;
+    // a new ride must not estimate speed from where the last one ended
+    this.previous = undefined;
+    this.speedMps = 0;
     this.watchId = navigator.geolocation.watchPosition(
       (position) => {
         if (typeof position.coords.speed === "number" && position.coords.speed >= 0) {
           this.speedMps = position.coords.speed;
-        } else if (this.previous) {
+        } else if (this.previous && position.coords.accuracy <= MAX_ESTIMATE_ACCURACY_M) {
           const dt = (position.timestamp - this.previous.timestamp) / 1000;
           if (dt > 0.2) {
             this.speedMps =
@@ -74,7 +84,7 @@ export class RideLocation {
         }
         if (typeof position.coords.heading === "number" && !Number.isNaN(position.coords.heading)) {
           this.headingDeg = position.coords.heading;
-        } else if (this.previous) {
+        } else if (this.previous && position.coords.accuracy <= MAX_ESTIMATE_ACCURACY_M) {
           this.headingDeg = bearingDeg(
             this.previous.coords.latitude,
             this.previous.coords.longitude,
@@ -82,12 +92,17 @@ export class RideLocation {
             position.coords.longitude,
           );
         }
-        this.previous = this.position;
+        // the estimate above used the immediately preceding good fix; keep only good ones
+        if (position.coords.accuracy <= MAX_ESTIMATE_ACCURACY_M) this.previous = position;
         this.position = position;
         this.onUpdate?.(position);
       },
-      (err) => console.warn("[geo]", err.message),
-      { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 },
+      (err) => {
+        console.warn("[geo]", err.message);
+        this.onError?.(err);
+      },
+      // maximumAge 0: never accept a cached fix from before the ride
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 },
     );
   }
 
@@ -109,7 +124,8 @@ export class ReportQueue {
 
   constructor(private apiBase: string) {
     try {
-      this.queue = JSON.parse(localStorage.getItem(QUEUE_KEY) ?? "[]");
+      const parsed: unknown = JSON.parse(localStorage.getItem(QUEUE_KEY) ?? localStorage.getItem(LEGACY_QUEUE_KEY) ?? "[]");
+      this.queue = Array.isArray(parsed) ? parsed : [];
     } catch {
       this.queue = [];
     }
