@@ -1,0 +1,1074 @@
+{
+  "corridorId": "MINTO_CP",
+  "displayName": "Ajmeri Gate (JLN Marg) to Connaught Place",
+  "geometryVersion": "minto-cp-2026-10-08",
+  "provider": "OpenStreetMap data (c) OpenStreetMap contributors, ODbL 1.0, via the public OSRM demo server",
+  "profile": "OSRM 'driving' (car) profile - the public server has no two-wheeler profile",
+  "retrievedAt": "2026-10-10T05:19:59Z",
+  "verification": "candidate",
+  "reviewNotes": "Retrieved by scripts/fetch_corridor.py. NOT yet reviewed by a person on a map or in the field.",
+  "redistribution": "ODbL 1.0 - attribute OpenStreetMap contributors; derived database terms apply",
+  "pairs": [
+    {
+      "id": "AJMERI_GATE_TO_CP",
+      "origin": {
+        "name": "JLN Marg, near Ajmeri Gate",
+        "coordinates": [
+          77.2275,
+          28.642
+        ]
+      },
+      "destination": {
+        "name": "Connaught Place (Outer Circle)",
+        "coordinates": [
+          77.219,
+          28.6315
+        ]
+      },
+      "candidates": [
+        {
+          "id": "A_VIA_MINTO",
+          "label": "Via Minto Road underpass",
+          "roadNames": [
+            "Jawaharlal Nehru Marg",
+            "Vivekanand Marg",
+            "Outer Circle",
+            "Radial Road 6"
+          ],
+          "geometry": {
+            "type": "LineString",
+            "coordinates": [
+              [
+                77.227637,
+                28.642238
+              ],
+              [
+                77.227302,
+                28.642386
+              ],
+              [
+                77.227082,
+                28.64232
+              ],
+              [
+                77.227015,
+                28.642295
+              ],
+              [
+                77.226822,
+                28.642217
+              ],
+              [
+                77.226647,
+                28.642138
+              ],
+              [
+                77.226321,
+                28.641693
+              ],
+              [
+                77.226271,
+                28.641631
+              ],
+              [
+                77.22582,
+                28.640954
+              ],
+              [
+                77.225162,
+                28.640094
+              ],
+              [
+                77.224447,
+                28.639134
+              ],
+              [
+                77.223523,
+                28.637993
+              ],
+              [
+                77.223486,
+                28.637938
+              ],
+              [
+                77.22332,
+                28.637684
+              ],
+              [
+                77.223279,
+                28.637622
+              ],
+              [
+                77.22327,
+                28.637608
+              ],
+              [
+                77.223231,
+                28.63755
+              ],
+              [
+                77.223195,
+                28.637496
+              ],
+              [
+                77.223106,
+                28.637367
+              ],
+              [
+                77.223036,
+                28.637272
+              ],
+              [
+                77.222884,
+                28.637062
+              ],
+              [
+                77.222333,
+                28.636305
+              ],
+              [
+                77.221684,
+                28.6354
+              ],
+              [
+                77.221597,
+                28.635278
+              ],
+              [
+                77.221544,
+                28.635212
+              ],
+              [
+                77.221581,
+                28.635181
+              ],
+              [
+                77.221803,
+                28.634993
+              ],
+              [
+                77.222083,
+                28.634738
+              ],
+              [
+                77.222119,
+                28.634705
+              ],
+              [
+                77.222383,
+                28.634423
+              ],
+              [
+                77.222407,
+                28.634388
+              ],
+              [
+                77.222485,
+                28.634279
+              ],
+              [
+                77.22254,
+                28.634198
+              ],
+              [
+                77.222516,
+                28.634119
+              ],
+              [
+                77.222495,
+                28.634085
+              ],
+              [
+                77.222469,
+                28.63406
+              ],
+              [
+                77.222434,
+                28.634037
+              ],
+              [
+                77.222397,
+                28.634016
+              ],
+              [
+                77.222371,
+                28.634005
+              ],
+              [
+                77.221833,
+                28.633781
+              ],
+              [
+                77.221175,
+                28.633512
+              ],
+              [
+                77.220809,
+                28.633356
+              ],
+              [
+                77.220894,
+                28.633197
+              ],
+              [
+                77.22095,
+                28.63303
+              ],
+              [
+                77.220958,
+                28.632968
+              ],
+              [
+                77.220977,
+                28.632829
+              ],
+              [
+                77.220962,
+                28.632627
+              ],
+              [
+                77.220952,
+                28.632589
+              ],
+              [
+                77.22088,
+                28.632361
+              ],
+              [
+                77.220757,
+                28.632168
+              ],
+              [
+                77.220647,
+                28.632033
+              ],
+              [
+                77.220516,
+                28.631916
+              ],
+              [
+                77.220373,
+                28.631822
+              ],
+              [
+                77.220263,
+                28.631772
+              ],
+              [
+                77.22016,
+                28.631726
+              ],
+              [
+                77.219983,
+                28.631674
+              ],
+              [
+                77.219823,
+                28.631654
+              ],
+              [
+                77.219705,
+                28.631637
+              ],
+              [
+                77.219581,
+                28.631635
+              ],
+              [
+                77.219391,
+                28.631677
+              ],
+              [
+                77.219197,
+                28.631746
+              ],
+              [
+                77.218972,
+                28.63187
+              ],
+              [
+                77.218798,
+                28.631584
+              ]
+            ]
+          },
+          "steps": [
+            {
+              "instruction": "Start on Jawaharlal Nehru Marg",
+              "name": "Jawaharlal Nehru Marg",
+              "type": "depart",
+              "modifier": "left",
+              "location": [
+                77.227637,
+                28.642238
+              ],
+              "distanceM": 36.6,
+              "durationS": 2.9,
+              "lanes": null
+            },
+            {
+              "instruction": "Turn left onto the road",
+              "name": "",
+              "type": "turn",
+              "modifier": "left",
+              "location": [
+                77.227302,
+                28.642386
+              ],
+              "distanceM": 69.8,
+              "durationS": 10.2,
+              "lanes": null
+            },
+            {
+              "instruction": "Turn slight left onto Vivekanand Marg",
+              "name": "Vivekanand Marg",
+              "type": "turn",
+              "modifier": "slight left",
+              "location": [
+                77.226647,
+                28.642138
+              ],
+              "distanceM": 915.9,
+              "durationS": 67.8,
+              "lanes": null
+            },
+            {
+              "instruction": "Turn left onto Outer Circle",
+              "name": "Outer Circle",
+              "type": "end of road",
+              "modifier": "left",
+              "location": [
+                77.221544,
+                28.635212
+              ],
+              "distanceM": 149.3,
+              "durationS": 9.9,
+              "lanes": null
+            },
+            {
+              "instruction": "Turn right onto Radial Road 6",
+              "name": "Radial Road 6",
+              "type": "turn",
+              "modifier": "right",
+              "location": [
+                77.22254,
+                28.634198
+              ],
+              "distanceM": 197.3,
+              "durationS": 22.7,
+              "lanes": null
+            },
+            {
+              "instruction": "At the roundabout take exit 2 onto the road",
+              "name": "",
+              "type": "rotary",
+              "modifier": "left",
+              "location": [
+                77.220809,
+                28.633356
+              ],
+              "distanceM": 339.6,
+              "durationS": 36.4,
+              "lanes": null
+            },
+            {
+              "instruction": "Keep left onto the road",
+              "name": "",
+              "type": "exit rotary",
+              "modifier": "left",
+              "location": [
+                77.218972,
+                28.63187
+              ],
+              "distanceM": 36,
+              "durationS": 3.2,
+              "lanes": null
+            },
+            {
+              "instruction": "Arrive at destination",
+              "name": "",
+              "type": "arrive",
+              "modifier": "left",
+              "location": [
+                77.218798,
+                28.631584
+              ],
+              "distanceM": 0,
+              "durationS": 0,
+              "lanes": null
+            }
+          ],
+          "distanceM": 1744.7,
+          "durationS": 153.1,
+          "source": "osrm-demo-driving",
+          "sourceTime": "2026-10-10T05:19:59Z",
+          "requestUrl": "https://router.project-osrm.org/route/v1/driving/77.2275,28.642;77.219,28.6315?overview=full&geometries=geojson&steps=true",
+          "separatedFrom": []
+        },
+        {
+          "id": "B_VIA_SHIVAJI_FLYOVER",
+          "label": "Via Shivaji Flyover and Barakhamba Road",
+          "roadNames": [
+            "Jawaharlal Nehru Marg",
+            "Maharaja Ranjeet Singh Marg",
+            "Shivaji Flyover",
+            "Barakhamba Road",
+            "Outer Circle"
+          ],
+          "geometry": {
+            "type": "LineString",
+            "coordinates": [
+              [
+                77.227637,
+                28.642238
+              ],
+              [
+                77.227302,
+                28.642386
+              ],
+              [
+                77.227182,
+                28.642423
+              ],
+              [
+                77.227089,
+                28.642451
+              ],
+              [
+                77.227038,
+                28.642441
+              ],
+              [
+                77.226986,
+                28.642439
+              ],
+              [
+                77.226934,
+                28.642446
+              ],
+              [
+                77.226885,
+                28.642462
+              ],
+              [
+                77.226843,
+                28.642483
+              ],
+              [
+                77.226805,
+                28.64251
+              ],
+              [
+                77.226773,
+                28.642543
+              ],
+              [
+                77.226748,
+                28.642581
+              ],
+              [
+                77.226732,
+                28.642623
+              ],
+              [
+                77.226724,
+                28.642666
+              ],
+              [
+                77.226726,
+                28.64271
+              ],
+              [
+                77.226742,
+                28.642768
+              ],
+              [
+                77.226775,
+                28.642821
+              ],
+              [
+                77.2268,
+                28.642848
+              ],
+              [
+                77.226829,
+                28.642872
+              ],
+              [
+                77.226862,
+                28.642891
+              ],
+              [
+                77.226897,
+                28.642907
+              ],
+              [
+                77.226935,
+                28.642917
+              ],
+              [
+                77.226974,
+                28.642923
+              ],
+              [
+                77.227014,
+                28.642924
+              ],
+              [
+                77.227053,
+                28.64292
+              ],
+              [
+                77.227109,
+                28.642905
+              ],
+              [
+                77.227159,
+                28.642881
+              ],
+              [
+                77.227203,
+                28.642847
+              ],
+              [
+                77.227238,
+                28.642807
+              ],
+              [
+                77.227263,
+                28.64276
+              ],
+              [
+                77.227276,
+                28.642711
+              ],
+              [
+                77.227277,
+                28.64266
+              ],
+              [
+                77.227265,
+                28.64261
+              ],
+              [
+                77.227367,
+                28.642499
+              ],
+              [
+                77.227468,
+                28.642439
+              ],
+              [
+                77.230852,
+                28.640729
+              ],
+              [
+                77.231013,
+                28.640654
+              ],
+              [
+                77.231466,
+                28.640486
+              ],
+              [
+                77.23159,
+                28.640459
+              ],
+              [
+                77.231564,
+                28.640368
+              ],
+              [
+                77.231494,
+                28.640028
+              ],
+              [
+                77.231472,
+                28.63994
+              ],
+              [
+                77.231427,
+                28.639765
+              ],
+              [
+                77.231376,
+                28.63912
+              ],
+              [
+                77.231363,
+                28.63897
+              ],
+              [
+                77.231341,
+                28.638726
+              ],
+              [
+                77.2313,
+                28.638248
+              ],
+              [
+                77.231274,
+                28.637942
+              ],
+              [
+                77.231204,
+                28.637425
+              ],
+              [
+                77.231147,
+                28.636821
+              ],
+              [
+                77.231137,
+                28.636714
+              ],
+              [
+                77.231112,
+                28.636548
+              ],
+              [
+                77.231046,
+                28.635867
+              ],
+              [
+                77.231033,
+                28.635725
+              ],
+              [
+                77.231022,
+                28.635633
+              ],
+              [
+                77.230995,
+                28.6354
+              ],
+              [
+                77.23092,
+                28.635066
+              ],
+              [
+                77.230807,
+                28.634769
+              ],
+              [
+                77.230686,
+                28.634517
+              ],
+              [
+                77.230559,
+                28.63431
+              ],
+              [
+                77.229709,
+                28.633167
+              ],
+              [
+                77.22752,
+                28.630222
+              ],
+              [
+                77.227094,
+                28.629669
+              ],
+              [
+                77.226915,
+                28.629371
+              ],
+              [
+                77.226726,
+                28.629131
+              ],
+              [
+                77.226672,
+                28.629056
+              ],
+              [
+                77.226616,
+                28.628981
+              ],
+              [
+                77.226535,
+                28.62887
+              ],
+              [
+                77.226497,
+                28.62881
+              ],
+              [
+                77.226417,
+                28.628848
+              ],
+              [
+                77.226307,
+                28.628917
+              ],
+              [
+                77.226135,
+                28.629019
+              ],
+              [
+                77.225795,
+                28.629221
+              ],
+              [
+                77.225138,
+                28.629589
+              ],
+              [
+                77.224056,
+                28.630226
+              ],
+              [
+                77.223868,
+                28.630337
+              ],
+              [
+                77.223786,
+                28.630382
+              ],
+              [
+                77.223605,
+                28.630485
+              ],
+              [
+                77.223255,
+                28.630685
+              ],
+              [
+                77.2227,
+                28.63101
+              ],
+              [
+                77.22264,
+                28.631043
+              ],
+              [
+                77.22261,
+                28.631054
+              ],
+              [
+                77.222573,
+                28.631065
+              ],
+              [
+                77.222535,
+                28.631066
+              ],
+              [
+                77.222379,
+                28.631042
+              ],
+              [
+                77.222269,
+                28.631006
+              ],
+              [
+                77.222128,
+                28.630872
+              ],
+              [
+                77.222073,
+                28.63082
+              ],
+              [
+                77.221895,
+                28.630656
+              ],
+              [
+                77.221825,
+                28.630614
+              ],
+              [
+                77.221746,
+                28.630549
+              ],
+              [
+                77.22162,
+                28.630458
+              ],
+              [
+                77.221594,
+                28.630438
+              ],
+              [
+                77.22157,
+                28.630419
+              ],
+              [
+                77.221405,
+                28.630292
+              ],
+              [
+                77.221227,
+                28.630205
+              ],
+              [
+                77.221043,
+                28.630128
+              ],
+              [
+                77.220917,
+                28.630083
+              ],
+              [
+                77.220855,
+                28.630061
+              ],
+              [
+                77.220815,
+                28.630048
+              ],
+              [
+                77.220652,
+                28.629995
+              ],
+              [
+                77.220533,
+                28.629974
+              ],
+              [
+                77.220203,
+                28.629916
+              ],
+              [
+                77.220082,
+                28.629906
+              ],
+              [
+                77.219868,
+                28.629889
+              ],
+              [
+                77.219799,
+                28.629884
+              ],
+              [
+                77.219766,
+                28.629882
+              ],
+              [
+                77.219485,
+                28.629894
+              ],
+              [
+                77.219314,
+                28.629911
+              ],
+              [
+                77.219243,
+                28.629918
+              ],
+              [
+                77.218958,
+                28.629967
+              ],
+              [
+                77.21868,
+                28.630038
+              ],
+              [
+                77.218412,
+                28.630135
+              ],
+              [
+                77.218284,
+                28.630181
+              ],
+              [
+                77.218192,
+                28.630217
+              ],
+              [
+                77.218041,
+                28.630268
+              ],
+              [
+                77.217901,
+                28.630339
+              ],
+              [
+                77.218028,
+                28.630503
+              ],
+              [
+                77.218144,
+                28.630652
+              ],
+              [
+                77.218268,
+                28.630812
+              ],
+              [
+                77.218616,
+                28.631288
+              ],
+              [
+                77.218698,
+                28.63142
+              ],
+              [
+                77.218759,
+                28.63152
+              ],
+              [
+                77.218798,
+                28.631584
+              ]
+            ]
+          },
+          "steps": [
+            {
+              "instruction": "Start on Jawaharlal Nehru Marg",
+              "name": "Jawaharlal Nehru Marg",
+              "type": "depart",
+              "modifier": "left",
+              "location": [
+                77.227637,
+                28.642238
+              ],
+              "distanceM": 58.7,
+              "durationS": 6,
+              "lanes": null
+            },
+            {
+              "instruction": "At the roundabout take exit 4 onto Jawaharlal Nehru Marg",
+              "name": "Jawaharlal Nehru Marg",
+              "type": "rotary",
+              "modifier": "slight left",
+              "location": [
+                77.227089,
+                28.642451
+              ],
+              "distanceM": 143.8,
+              "durationS": 10.4,
+              "lanes": null
+            },
+            {
+              "instruction": "Keep left onto Jawaharlal Nehru Marg",
+              "name": "Jawaharlal Nehru Marg",
+              "type": "exit rotary",
+              "modifier": "left",
+              "location": [
+                77.227265,
+                28.64261
+              ],
+              "distanceM": 474.9,
+              "durationS": 31.1,
+              "lanes": null
+            },
+            {
+              "instruction": "Turn right onto Maharaja Ranjeet Singh Marg",
+              "name": "Maharaja Ranjeet Singh Marg",
+              "type": "end of road",
+              "modifier": "right",
+              "location": [
+                77.231466,
+                28.640486
+              ],
+              "distanceM": 705.6,
+              "durationS": 48.5,
+              "lanes": null
+            },
+            {
+              "instruction": "Continue on Shivaji Flyover",
+              "name": "Shivaji Flyover",
+              "type": "new name",
+              "modifier": "straight",
+              "location": [
+                77.230559,
+                28.63431
+              ],
+              "distanceM": 151.5,
+              "durationS": 9.9,
+              "lanes": null
+            },
+            {
+              "instruction": "Arrive at destination",
+              "name": "Shivaji Flyover",
+              "type": "arrive",
+              "modifier": "left",
+              "location": [
+                77.229709,
+                28.633167
+              ],
+              "distanceM": 0,
+              "durationS": 0,
+              "lanes": null
+            },
+            {
+              "instruction": "Start on Shivaji Flyover",
+              "name": "Shivaji Flyover",
+              "type": "depart",
+              "modifier": "left",
+              "location": [
+                77.229709,
+                28.633167
+              ],
+              "distanceM": 568.6,
+              "durationS": 39.3,
+              "lanes": null
+            },
+            {
+              "instruction": "Turn right onto Barakhamba Road",
+              "name": "Barakhamba Road",
+              "type": "turn",
+              "modifier": "right",
+              "location": [
+                77.226535,
+                28.62887
+              ],
+              "distanceM": 496.5,
+              "durationS": 34.6,
+              "lanes": null
+            },
+            {
+              "instruction": "Turn slight left onto Outer Circle",
+              "name": "Outer Circle",
+              "type": "turn",
+              "modifier": "slight left",
+              "location": [
+                77.222269,
+                28.631006
+              ],
+              "distanceM": 475.8,
+              "durationS": 35.5,
+              "lanes": null
+            },
+            {
+              "instruction": "Turn right onto the road",
+              "name": "",
+              "type": "turn",
+              "modifier": "right",
+              "location": [
+                77.217901,
+                28.630339
+              ],
+              "distanceM": 163.6,
+              "durationS": 14.7,
+              "lanes": null
+            },
+            {
+              "instruction": "Arrive at destination",
+              "name": "",
+              "type": "arrive",
+              "modifier": "right",
+              "location": [
+                77.218798,
+                28.631584
+              ],
+              "distanceM": 0,
+              "durationS": 0,
+              "lanes": null
+            }
+          ],
+          "distanceM": 3239,
+          "durationS": 230,
+          "source": "osrm-demo-driving",
+          "sourceTime": "2026-10-10T05:19:59Z",
+          "requestUrl": "https://router.project-osrm.org/route/v1/driving/77.2275,28.642;77.23,28.633;77.219,28.6315?overview=full&geometries=geojson&steps=true",
+          "separatedFrom": []
+        }
+      ]
+    }
+  ]
+}

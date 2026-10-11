@@ -1,0 +1,14 @@
+{
+  "source": "OpenStreetMap Nominatim, retrieved 2026-10-10 (ODbL). Point = Nominatim result centroid, not an entrance.",
+  "landmarks": [
+    {"name": "Connaught Place", "nameHi": "कनॉट प्लेस", "coordinates": [77.21938, 28.63177]},
+    {"name": "New Delhi Railway Station", "nameHi": "नई दिल्ली रेलवे स्टेशन", "coordinates": [77.22041, 28.64028]},
+    {"name": "Ajmeri Gate", "nameHi": "अजमेरी गेट", "coordinates": [77.22400, 28.64625]},
+    {"name": "Paharganj", "nameHi": "पहाड़गंज", "coordinates": [77.21406, 28.64150]},
+    {"name": "Delhi Gate", "nameHi": "दिल्ली गेट", "coordinates": [77.24081, 28.63922]},
+    {"name": "ITO", "nameHi": "आईटीओ", "coordinates": [77.24104, 28.62819]},
+    {"name": "Mandi House", "nameHi": "मंडी हाउस", "coordinates": [77.23420, 28.62561]},
+    {"name": "Barakhamba Road", "nameHi": "बाराखंभा रोड", "coordinates": [77.23068, 28.62637]},
+    {"name": "Janpath", "nameHi": "जनपथ", "coordinates": [77.21905, 28.62337]}
+  ]
+}
