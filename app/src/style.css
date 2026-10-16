@@ -1,4 +1,4 @@
-/* DilliJalNav Edge
+/* DilliJalNav
    Palette: dark green #0A3323 · moss #839958 · beige #F7F4D5 · rosy brown #D3968C · midnight green #105666
    Layout is chosen by the screen: phone = bottom sheet, wide = side panel,
    short wide screens (car dashboards) = dark HUD with 54px targets. */
@@ -470,7 +470,13 @@ h3 { margin: 8px 0 0; font-size: 13px; color: var(--muted); font-weight: 700; te
 .rg-eta b { font-size: 16px; font-variant-numeric: tabular-nums; }
 .rg-eta span { font-size: 12px; color: #BFC7A8; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ride-water { flex: none; margin: 0; padding: 6px 14px; background: var(--rose-deep); color: var(--beige); font-size: 13px; font-weight: 600; }
+.ride-map-wrap { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
 .ride-map { flex: 1; min-height: 0; background: #0E3B2A; }
+.ride-recenter {
+  position: absolute; z-index: 5; left: 50%; bottom: 16px; transform: translateX(-50%);
+  background: var(--dark); color: var(--beige); border: 2px solid var(--moss); border-radius: var(--r);
+  box-shadow: var(--shadow); font-weight: 700; padding: 10px 18px; min-height: var(--target); cursor: pointer;
+}
 
 .hud-bottom {
   flex: none; display: flex; gap: 8px;
@@ -512,6 +518,7 @@ input[type="range"] { width: 100%; accent-color: var(--moss); }
   padding: 8px 10px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .od-field:hover { background: var(--raised); }
+.od-gps { flex: none; min-height: calc(var(--target) - 8px); margin: 4px; padding: 0 10px; border-radius: var(--r); background: var(--moss); color: var(--dark); font: 700 13px var(--font); white-space: nowrap; }
 .od-swap { flex: none; width: var(--target); padding: 0; font-size: 20px; }
 
 .pick-banner {
@@ -636,7 +643,7 @@ body[data-map="google"] .gm-style .gm-style-iw-c { border-radius: var(--r); colo
 
 /* ---------- pocket mode: black AMOLED screen, guidance only ---------- */
 .ride.pocket { background: #000; }
-.ride.pocket #cam, .ride.pocket #overlay, .ride.pocket .hud-top, .ride.pocket .ride-map { display: none; }
+.ride.pocket #cam, .ride.pocket #overlay, .ride.pocket .hud-top, .ride.pocket .ride-map, .ride.pocket .ride-map-wrap { display: none; }
 .ride.pocket .ride-camera { flex: 0 0 auto; min-height: 96px; height: auto; background: #000; }
 .ride.pocket .ride-nav { flex: 1; justify-content: center; background: #000; }
 .ride.pocket .ride-guide { background: #000; color: #F7F4D5; border: 1px solid #22573F; }
@@ -669,6 +676,10 @@ body[data-map="google"] .gm-style .gm-style-iw-c { border-radius: var(--r); colo
 /* on the tilted, heading-up map the ground ring lies flat and the map itself shows direction */
 .map-tpp .ra-ring, .map-tpp .ra-shadow { transform: scaleY(.45); }
 .map-tpp .ra-cone { display: none; }
+.ra-arrow { position: absolute; inset: 0; width: 140px; height: 140px; z-index: 1; transition: transform .3s; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, .6)); }
+.map-tpp .ra-arrow { transform: translateY(-48px) !important; animation: ra-bob 1.2s ease-in-out infinite alternate; }
+.rider-avatar.weak .ra-arrow { opacity: .6; }
+@keyframes ra-bob { to { translate: 0 -6px; } }
 @keyframes ra-pulse { 0% { opacity: .9; scale: .6; } 100% { opacity: 0; scale: 1.5; } }
 
 .flood-spiral { position: relative; width: 64px; height: 96px; pointer-events: none; }
@@ -708,3 +719,4 @@ body[data-map="google"] .gm-style .gm-style-iw-c { border-radius: var(--r); colo
 .no-camera .hud-chip:not(:has(#hud-speed)):not(:has(#hud-gps)) { display: none; }
 /* the rider stays on top of every tag standing near it */
 .map-pin:has(.rider-avatar) { z-index: 10; }
+.me-dot { width: 16px; height: 16px; border-radius: 50%; background: #1A73E8; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(26, 115, 232, .25); }
