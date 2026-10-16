@@ -8,6 +8,7 @@ import {
   cumulative,
   formatDistance,
   haversine,
+  MAX_GUIDANCE_ACCURACY_M,
   MAX_USABLE_ACCURACY_M,
   nextStep,
   project,
@@ -24,11 +25,11 @@ import { WaterGate, type WaterBox } from "./water.ts";
 import { WaterModel } from "./waterModel.ts";
 import { createMap, type Circle, type HtmlMarker, type Layer, type MapView } from "./map/mapview.ts";
 import { floodSpiral, potholePing, riderAvatar } from "./map/markers.ts";
-import { ahead, loadPotholes, logPothole } from "./potholeLog.ts";
+import { ahead, loadPotholes, loadWater, logPothole, logWater } from "./potholeLog.ts";
 
 /** Legacy pothole API (server/main.py). The flood route flow uses /v1 instead. */
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
-const SETTINGS_KEY = "dillijalnav.cameraSettings";
+const SETTINGS_KEY = "margsetu.cameraSettings";
 const LEGACY_SETTINGS_KEY = "pathfinder.settings";
 const MODEL_URL = "/models/pothole-yolov8n.onnx";
 const WATER_MODEL_URL = "/models/water-segformer-b0-ade.onnx";
@@ -73,7 +74,7 @@ const depthCanvas = document.createElement("canvas");
 depthCanvas.width = depthCanvas.height = 48;
 const depthCtx = depthCanvas.getContext("2d", { willReadFrequently: true })!;
 let frameNo = 0;
-const RIDE_MODE_KEY = "dillijalnav.rideMode";
+const RIDE_MODE_KEY = "margsetu.rideMode";
 type RideMode = "camera" | "pocket";
 let rideMode: RideMode = "camera";
 try {
@@ -212,6 +213,8 @@ let target: { lon: number; lat: number; heading: number } | undefined;
 let shown: { lon: number; lat: number; heading: number } | undefined;
 let lastFollowAt = 0;
 let potholes = loadPotholes();
+/** Camera water sightings, kept for a few hours so the spirals stay on both maps. */
+let waterSeen = loadWater();
 /** Detector tracks already put on the map this ride. */
 const mappedTracks = new Set<number>();
 /** Third-person camera: zoom, and how far ahead of the rider it looks so the avatar sits low on screen. */
@@ -225,11 +228,20 @@ const warnedHotspots = new Set<string>();
 
 let rideMapReady: Promise<void> | undefined;
 
-/** The in-ride map: dark HUD, no gestures, nothing to fiddle with while moving. */
+/** The camera follows the rider unless the user dragged the map to look around. */
+let rideFollow = true;
+function setRideFollow(on: boolean): void {
+  rideFollow = on;
+  $("ride-recenter").hidden = on;
+}
+
+/** The in-ride map: dark HUD; it can be dragged to look ahead or back along the route. */
 function initRideMap(): Promise<void> {
-  rideMapReady ??= createMap($("ride-map"), { center: [77.224, 28.636], zoom: FOLLOW_ZOOM, interactive: false, dark: true, tpp: true }).then((m) => {
+  rideMapReady ??= createMap($("ride-map"), { center: [77.224, 28.636], zoom: FOLLOW_ZOOM, interactive: true, dark: true, tpp: true }).then((m) => {
     rideRouteLayer = m.layer();
     rideTagLayer = m.layer();
+    // drag to look along the route (ahead or back); the camera stops following until "Re-centre"
+    m.onUserMove(() => setRideFollow(false));
     rideMap = m;
   });
   return rideMapReady;
@@ -242,6 +254,8 @@ function drawPlan(): void {
   const pts = plan.route.geometry.coordinates;
   rideRouteLayer.line(pts, { color: "#F7F4D5", weight: 11, opacity: 0.95 });
   rideRouteLayer.line(pts, { color: plan.onOriginal ? "#8E3B2F" : "#839958", weight: 7 });
+  rideRouteLayer.dot(pts[0], { radius: 8, color: "#F7F4D5", weight: 3, fill: "#839958", tooltip: "Start" });
+  rideRouteLayer.dot(pts[pts.length - 1], { radius: 10, color: "#F7F4D5", weight: 3, fill: "#0A3323", tooltip: plan.destinationName });
   for (const h of plan.hotspots) {
     rideRouteLayer.area(h.ring, { color: h.restricts ? "#D3968C" : "#6E7B70", weight: 3, fillOpacity: h.restricts ? 0.5 : 0.1 });
   }
@@ -261,7 +275,7 @@ function drawPlan(): void {
 /** Next maneuver and remaining distance, from the GPS fix snapped to the route. */
 function updateGuide(lon: number, lat: number, accuracyM: number): void {
   if (!plan) {
-    $("rg-text").textContent = "No route selected - free ride";
+    $("rg-text").textContent = "No route yet - set your destination in the planner to get directions";
     return;
   }
   const line = plan.route.geometry.coordinates;
@@ -334,7 +348,7 @@ function drawTags(): void {
   for (const h of plan?.hotspots ?? []) {
     if (h.restricts) layer.pin(h.centroid, floodSpiral(`Water reported · ${h.name}`, "reported"));
   }
-  for (const w of ride.water) if (w.at) layer.pin(w.at, floodSpiral("Possible water · camera", "camera"));
+  for (const w of waterSeen) layer.pin(w.at, floodSpiral(`Possible water · camera · ${new Date(w.seen).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, "camera"));
   for (const p of potholes) {
     layer.pin(p.at, potholePing(p.depthM ? `Pothole · ~${p.depthM.toFixed(2)} m` : "Pothole", p.severe));
   }
@@ -383,9 +397,8 @@ function follow(now: number): void {
   const at: [number, number] = [shown.lon, shown.lat];
   rideMarker ??= rideMap.marker(at, avatarEl);
   rideMarker.move(at);
-  const cone = avatarEl.querySelector<SVGElement>(".ra-cone");
-  if (cone) cone.style.transform = `rotate(${shown.heading}deg)`; // flat maps only (hidden when tilted)
-  rideMap.camera(rideMap.tilted ? ahead(at, shown.heading, LOOK_AHEAD_M) : at, shown.heading, FOLLOW_ZOOM);
+  for (const el of avatarEl.querySelectorAll<SVGElement>(".ra-cone, .ra-arrow")) el.style.transform = `rotate(${shown.heading}deg)`; // flat maps; the 3D map turns itself
+  if (rideFollow) rideMap.camera(rideMap.tilted ? ahead(at, shown.heading, LOOK_AHEAD_M) : at, shown.heading, FOLLOW_ZOOM);
 }
 
 /** Tell the rider why the map is not moving, with the fix, instead of a silent console warning. */
@@ -696,6 +709,10 @@ async function startRide(): Promise<void> {
   if (stream) dashcam.start(video);
   rider.start();
   ride = { startedAt: Date.now(), metres: 0, hazards: 0, alerts: 0, water: [] };
+  waterSeen = loadWater(); // drop sightings that have faded since the last ride
+  potholes = loadPotholes(); // include any logged since the page opened
+  potholes = loadPotholes(); // include any logged since the page opened
+  setRideFollow(true);
   waterGate.reset();
   waterBox = null;
   waterAt = 0;
@@ -736,7 +753,7 @@ async function loop(): Promise<void> {
     let dets: Detection[] = [];
     if (detectorReady) {
       try {
-        dets = await detector.detect(video, video.videoWidth, video.videoHeight, engine.cfg.minScore);
+        dets = await detector.detect(video, video.videoWidth, video.videoHeight, Math.min(engine.cfg.keepScore, engine.cfg.minScore));
       } catch (err) {
         console.error("[detect]", err);
         await new Promise((resolve) => setTimeout(resolve, 300));
@@ -762,7 +779,9 @@ async function loop(): Promise<void> {
     if (waterAlert) {
       ride.alerts++;
       const spot = waterAhead();
-      ride.water.push({ time: Date.now(), at: spot?.at ?? (shown ? [shown.lon, shown.lat] : undefined) });
+      const at = spot?.at ?? (shown ? ([shown.lon, shown.lat] as [number, number]) : undefined);
+      ride.water.push({ time: Date.now(), at });
+      if (at) waterSeen = logWater(waterSeen, { at, seen: Date.now() });
       drawTags();
       sayAlert(spot ? "WATER_REROUTE" : "WATER_AHEAD", {}, "Experimental camera cue - do not ride into water");
       flagIncident("possible water");
@@ -859,7 +878,7 @@ function renderClips(): void {
 
     const link = document.createElement("a");
     link.href = url;
-    link.download = "dillijalnav-clip-" + clip.id + (clip.blob.type.includes("mp4") ? ".mp4" : ".webm");
+    link.download = "margsetu-clip-" + clip.id + (clip.blob.type.includes("mp4") ? ".mp4" : ".webm");
     link.textContent = "Download clip";
 
     card.append(player, meta, link);
@@ -895,13 +914,12 @@ function setupRide(): void {
     $("hud-gps").parentElement!.classList.toggle("hud-weak", raw.accuracy > MAX_USABLE_ACCURACY_M);
     // a cell-tower / Wi-Fi fix hundreds of metres off must not drive the guidance;
     // the avatar still shows roughly where you are, dimmed, so the map is never frozen
-    if (raw.accuracy > MAX_USABLE_ACCURACY_M) {
-      avatarEl.classList.add("weak");
+    avatarEl.classList.toggle("weak", raw.accuracy > MAX_USABLE_ACCURACY_M);
+    if (raw.accuracy > MAX_GUIDANCE_ACCURACY_M) {
       target = { lon: raw.longitude, lat: raw.latitude, heading: target?.heading ?? compass.headingDeg ?? 0 };
       if (running) $("rg-text").textContent = `Weak GPS (±${Math.round(raw.accuracy)} m) - waiting for a better fix`;
       return;
     }
-    avatarEl.classList.remove("weak");
     estimate = smoothFix(estimate, { lon: raw.longitude, lat: raw.latitude, accuracyM: raw.accuracy, t: position.timestamp });
     let { lon, lat } = estimate;
     let snappedTravelled: number | undefined;
@@ -997,6 +1015,7 @@ async function boot(): Promise<void> {
   bindSettings();
 
   $("btn-end").addEventListener("click", endRide);
+  $("ride-recenter").addEventListener("click", () => setRideFollow(true));
   $("btn-home").addEventListener("click", () => show("planner"));
   $("btn-sum-report").addEventListener("click", () => {
     show("planner");
