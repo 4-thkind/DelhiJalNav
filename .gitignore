@@ -37,7 +37,7 @@ backend/.aws-sam/
 samconfig.toml
 
 # internal specifications and project notes (keep only root README.md)
-DILLIJALNAV_EDGE_V2_IMPLEMENTATION_MASTER.md
+MARGSETU_V2_IMPLEMENTATION_MASTER.md
 IMPLEMENTATION_STATUS.md
 MAP_UI_SPECIFICATION.md
 PROJECT_STATE.md
