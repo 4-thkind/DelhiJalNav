@@ -129,7 +129,7 @@ def smoke(api: Api) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--api", default=os.environ.get("DJN_API", "http://127.0.0.1:8787"))
+    ap.add_argument("--api", default=os.environ.get("MARGSETU_API", "http://127.0.0.1:8787"))
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status")
     sub.add_parser("reset")

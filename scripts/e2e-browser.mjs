@@ -2,11 +2,11 @@
  * Browser journey test over the Chrome DevTools Protocol. No npm packages.
  *
  *   python backend/local_server.py          (after: cd app && npm run build)
- *   node scripts/e2e-browser.mjs C:/djn-e2e  (output dir: screenshots + a throwaway Chrome profile)
+ *   node scripts/e2e-browser.mjs C:/margsetu-e2e  (output dir: screenshots + a throwaway Chrome profile)
  *
  * Use an output path WITHOUT spaces: Chrome's CacheStorage fails inside a profile
  * path containing spaces, which silently disables the service worker.
- * Env: CHROME (browser path), DJN_URL (default http://127.0.0.1:8787/),
+ * Env: CHROME (browser path), MARGSETU_URL (default http://127.0.0.1:8787/),
  *      DEMO_ADMIN_KEY (default local-demo-admin) - the run resets the demo namespace first.
  */
 import { spawn } from "node:child_process";
@@ -15,7 +15,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 const out = process.argv[2];
 if (!out || out.includes(" ")) throw new Error("usage: node scripts/e2e-browser.mjs <output-dir-without-spaces>");
 mkdirSync(out, { recursive: true });
-const URL_ = process.env.DJN_URL ?? "http://127.0.0.1:8787/";
+const URL_ = process.env.MARGSETU_URL ?? "http://127.0.0.1:8787/";
 const CHROME = process.env.CHROME ?? "C:/Program Files/Google/Chrome/Application/chrome.exe";
 
 const reset = await fetch(new URL("/v1/demo/control", URL_), {
@@ -71,18 +71,21 @@ await send("Runtime.enable");
 await send("Page.enable");
 await send("Emulation.setDeviceMetricsOverride", { width: 360, height: 900, deviceScaleFactor: 1, mobile: true });
 await send("Page.navigate", { url: URL_ });
-await waitFor(`document.querySelector("#decision-card .route-name, #decision-card h2")`);
+await waitFor(`document.querySelector("#decision-card").innerText.includes("location")`);
 const checks = [];
 const ok = (name, cond, detail = "") => { checks.push(`${cond ? "PASS" : "FAIL"} ${name} ${detail}`); };
 ok("first run asks how you travel", await js(`!document.querySelector("#screen-welcome").classList.contains("hidden")`));
 await js(`document.querySelector('[data-role="rider"]').click()`);
 await waitFor(`document.querySelector("#role-label").innerText.includes("Two-wheeler rider")`);
 ok("rider role sets two-wheeler", true && await js(`document.querySelector("#screen-welcome").classList.contains("hidden")`));
+ok("no preset route until start and destination are set", (await text("#od-to")) === "Choose destination" && !(await js(`!!document.querySelector("#decision-card .route-name")`)), await text("#decision-card"));
+await click("#btn-preset");
+await waitFor(`document.querySelector("#decision-card .route-name")`, 15000);
 
 ok("no horizontal overflow at 360px", await js("document.documentElement.scrollWidth <= innerWidth"), await js("document.documentElement.scrollWidth+'/'+innerWidth"));
 ok("baseline suggested with no reports", (await text("#decision-card")).includes("Via Minto Road underpass"));
 ok("no-reports message, no 'safe' claim", (await text("#decision-card")).includes("No current waterlogging reports") && !/\bsafe\b(?! guarantee)/i.test((await text("#decision-card")).replace("not a safety guarantee", "")));
-ok("mode label visible", (await text("#mode-badge")).includes("Demo"));
+ok("mode label visible", (await text("#mode-badge")).includes("Live"));
 await waitFor(`document.body.dataset.map && document.querySelector(document.body.dataset.map === "google" ? "#plan-map .gm-style" : "#plan-map.leaflet-container")`, 15000);
 ok("map renders", true, await js("document.body.dataset.map"));
 
@@ -185,8 +188,8 @@ await click("#btn-end");
 await click("#btn-home");
 await click("#mode-camera");
 
-// optional: water + pothole models on real photos (DJN_FLOOD_PHOTO / DJN_DRY_PHOTO = local image paths)
-for (const [env, expectWater] of [["DJN_FLOOD_PHOTO", true], ["DJN_DRY_PHOTO", false]]) {
+// optional: water + pothole models on real photos (MARGSETU_FLOOD_PHOTO / MARGSETU_DRY_PHOTO = local image paths)
+for (const [env, expectWater] of [["MARGSETU_FLOOD_PHOTO", true], ["MARGSETU_DRY_PHOTO", false]]) {
   if (!process.env[env]) continue;
   await click("#btn-camera");
   const doc = await send("DOM.getDocument");
@@ -260,6 +263,7 @@ const api = (path, body, headers = {}) => fetch(new URL(path, URL_), {
   method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body),
 }).then((r) => r.json());
 await api("/v1/demo/control", { reset: true }, { "x-demo-admin-key": process.env.DEMO_ADMIN_KEY ?? "local-demo-admin" });
+await click("#btn-preset"); // the reload started from GPS; this journey runs on the reviewed pilot pair
 await click("#btn-compare");
 await waitFor(`document.querySelector("#decision-card").innerText.includes("Via Minto Road underpass")`);
 const status = await (await fetch(new URL("/v1/status", URL_))).json();
