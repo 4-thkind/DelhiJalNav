@@ -65,7 +65,7 @@ export interface MapOptions {
 export const TPP_TILT = 60;
 
 const KEY: string = import.meta.env.VITE_GOOGLE_MAPS_KEY ?? "";
-const FAILED_FLAG = "dillijalnav.googleMapsFailed";
+const FAILED_FLAG = "margsetu.googleMapsFailed";
 const DARK_QUERY = "(prefers-color-scheme: dark), (min-width: 900px) and (max-height: 640px) and (orientation: landscape)";
 
 let loading: Promise<boolean> | undefined;
@@ -91,14 +91,14 @@ function loadGoogle(): Promise<boolean> {
       location.reload();
     };
     const timer = setTimeout(() => resolve(false), 8000);
-    w.__djnMapsReady = () => {
+    w.__margsetuMapsReady = () => {
       clearTimeout(timer);
       resolve(true);
     };
     const script = document.createElement("script");
     script.src =
       "https://maps.googleapis.com/maps/api/js?" +
-      new URLSearchParams({ key: KEY, v: "weekly", loading: "async", callback: "__djnMapsReady", language: "en", region: "IN" });
+      new URLSearchParams({ key: KEY, v: "weekly", loading: "async", callback: "__margsetuMapsReady", language: "en", region: "IN" });
     script.async = true;
     script.onerror = () => {
       clearTimeout(timer);

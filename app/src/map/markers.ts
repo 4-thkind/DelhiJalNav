@@ -26,6 +26,8 @@ export function riderAvatar(): HTMLElement {
     "rider-avatar",
     '<div class="ra-ring"></div><div class="ra-shadow"></div>' +
       '<svg class="ra-cone" viewBox="0 0 120 120" aria-hidden="true"><path d="M60 8 L80 52 A24 24 0 0 0 40 52 Z" fill="#839958" opacity=".55"/></svg>' +
+      // direction of travel: rotates with the heading on flat maps, points ahead (up) on the heading-up 3D map
+      '<svg class="ra-arrow" viewBox="0 0 140 140" aria-hidden="true"><path d="M70 2 L92 34 L70 25 L48 34 Z" fill="#F7F4D5" stroke="#0A3323" stroke-width="3" stroke-linejoin="round"/></svg>' +
       '<svg class="ra-figure" viewBox="0 0 64 88" aria-hidden="true">' +
       '<rect x="27" y="64" width="10" height="22" rx="4" fill="#1b1b1b"/>' + // rear wheel
       '<path d="M14 58 Q32 50 50 58 L46 72 Q32 76 18 72 Z" fill="#F7F4D5" stroke="#0A3323" stroke-width="2"/>' + // scooter tail
