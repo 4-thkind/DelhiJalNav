@@ -1,4 +1,4 @@
-"""One command to run DilliJalNav Edge:  python run.py
+"""One command to run DilliJalNav:  python run.py
 
 1. installs what is missing (Python: segno for the QR code, edge-tts for the
    natural voice; npm packages for the app),
@@ -121,10 +121,15 @@ def start_tunnel(port: int, procs: list) -> str | None:
     if not found:
         say("tunnel did not come up")
         return None
-    # a fresh quick tunnel can take a few seconds before its DNS name resolves
-    if not wait_http(found[0] + "/v1/status", 40):
-        say("tunnel URL is not answering yet - try the QR again in a minute")
     return found[0]
+
+
+def check_tunnel(url: str) -> None:
+    # a fresh quick tunnel can take a while before its DNS name resolves; checked after the QR is shown
+    if wait_http(url + "/v1/status", 90):
+        say("phone link is live - scan the QR")
+    else:
+        say("tunnel URL is not answering from this laptop yet - if the phone cannot open it, wait a minute and rescan")
 
 
 def show_qr(url: str) -> None:
@@ -136,7 +141,7 @@ def show_qr(url: str) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Run DilliJalNav Edge (backend + app + phone link)")
+    ap = argparse.ArgumentParser(description="Run DilliJalNav (backend + app + phone link)")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--no-tunnel", action="store_true", help="LAN link only (phone camera needs HTTPS, so it stays off)")
     ap.add_argument("--rebuild", action="store_true", help="rebuild the app even if it looks up to date")
@@ -162,6 +167,8 @@ def main() -> None:
             if not args.no_tunnel:
                 say("falling back to the LAN link (same Wi-Fi; restart with --no-tunnel so the phone can reach it)")
             say("plain http: maps and reports work on the phone, the camera does not")
+        else:
+            threading.Thread(target=check_tunnel, args=(url,), daemon=True).start()
         show_qr(url)
         say("running - press Ctrl+C to stop")
         while all(p.poll() is None for p in procs[:1]):

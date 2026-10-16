@@ -1,4 +1,4 @@
-"""DilliJalNav Edge legacy backend: the original crowdsourced pothole map.
+"""DilliJalNav legacy backend: the original crowdsourced pothole map.
 
 Phones send hazard *metadata* only - coordinates, type, confidence. No video, no
 account, no identifier. Independent sightings of the same hazard are merged into
@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent
-DB_PATH = Path(os.environ.get("DILLIJALNAV_DB") or os.environ.get("PATHFINDER_DB") or ROOT / "hazards.db")
+DB_PATH = Path(os.environ.get("MARGSETU_DB") or os.environ.get("PATHFINDER_DB") or ROOT / "hazards.db")
 APP_DIST = ROOT.parent / "app" / "dist"
 
 #: Two sightings of the same hazard type within this radius are the same hazard.
@@ -96,7 +96,7 @@ def db():
 with db() as conn:
     conn.executescript(SCHEMA)
 
-app = FastAPI(title="DilliJalNav Edge (legacy pothole API)", version="0.1.0")
+app = FastAPI(title="DilliJalNav (legacy pothole API)", version="0.1.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
