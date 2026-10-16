@@ -140,7 +140,7 @@ class Dynamic(unittest.TestCase):
 
     def test_outside_pilot_radius(self):
         with self.assertRaises(ApiError) as ctx:
-            self.svc.compare({"corridorId": "MINTO_CP", "origin": [77.05, 28.55], "destination": self.dest})
+            self.svc.compare({"corridorId": "MINTO_CP", "origin": [76.5, 28.0], "destination": self.dest})
         self.assertEqual(ctx.exception.code, "OUTSIDE_PILOT_COVERAGE")
 
     def test_provider_down_is_explicit(self):
@@ -171,15 +171,31 @@ class Geocode(unittest.TestCase):
     def setUp(self):
         self.svc, _ = make()
         self._orig = external.nominatim
+        self._orig_photon = external.photon
+        external.photon = lambda q, near, bbox: []  # no network in tests: Photon finds nothing, Nominatim answers
 
     def tearDown(self):
         external.nominatim = self._orig
+        external.photon = self._orig_photon
+
+    def test_photon_first_biased_near_the_user(self):
+        seen = {}
+        def photon(q, near, bbox):
+            seen["near"] = near
+            return [{"name": "Rithala", "address": "Metro / rail station · Rohini", "coordinates": [77.1077, 28.7206]}]
+        external.photon = photon
+        external.nominatim = lambda q, c, **kw: self.fail("Nominatim must not run when Photon answers")
+        r = self.svc.geocode("rithala metro station", "77.0663,28.7236")["results"]
+        self.assertEqual([x["name"] for x in r], ["Rithala"])
+        self.assertEqual(seen["near"], [77.0663, 28.7236])
+        self.svc.geocode("rithala", "not,a-point")  # a bad bias falls back to the pilot centre
+        self.assertEqual(seen["near"], self.svc.hotspots[0]["properties"]["centroid"])
 
     def test_results_bounded_and_deduplicated(self):
-        external.nominatim = lambda q, c: [
+        external.nominatim = lambda q, c, **kw: [
             {"name": "Janpath", "address": "CP", "coordinates": [77.21905, 28.62337]},
             {"name": "Janpath", "address": "CP", "coordinates": [77.21906, 28.62338]},
-            {"name": "Far away", "address": "Gurugram", "coordinates": [77.03, 28.46]},
+            {"name": "Far away", "address": "Jaipur", "coordinates": [75.79, 26.91]},
         ]
         r = self.svc.geocode("janpath")["results"]
         self.assertEqual([x["name"] for x in r], ["Janpath"])
@@ -187,7 +203,7 @@ class Geocode(unittest.TestCase):
     def test_validation_and_failure(self):
         with self.assertRaises(ApiError):
             self.svc.geocode("x")
-        external.nominatim = lambda q, c: (_ for _ in ()).throw(external.ProviderError("down"))
+        external.nominatim = lambda q, c, **kw: (_ for _ in ()).throw(external.ProviderError("down"))
         with self.assertRaises(ApiError) as ctx:
             self.svc.geocode("janpath")
         self.assertEqual(ctx.exception.status, 503)
@@ -195,7 +211,7 @@ class Geocode(unittest.TestCase):
     def test_landmarks_in_view(self):
         v = self.svc.hotspots_view("MINTO_CP")
         self.assertGreaterEqual(len(v["landmarks"]), 5)
-        self.assertEqual(v["pilotRadiusM"], 8000)
+        self.assertEqual(v["pilotRadiusM"], 40000)
 
 
 class Weather(unittest.TestCase):
@@ -251,7 +267,7 @@ class CameraAvoid(unittest.TestCase):
         self.assertIn(a["id"], rejected)
 
     def test_invalid_avoid(self):
-        for bad in ([[77.05, 28.55]], [[1, 2, 3]], "x", [self.basin] * 4, [[True, 28.6]]):
+        for bad in ([[76.5, 28.0]], [[1, 2, 3]], "x", [self.basin] * 4, [[True, 28.6]]):
             with self.assertRaises(ApiError) as ctx:
                 self.svc.compare({"corridorId": "MINTO_CP", "routePairId": self.pair["id"], "avoid": bad})
             self.assertEqual(ctx.exception.code, "INVALID_AVOID")

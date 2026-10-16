@@ -290,7 +290,7 @@ class Routes(unittest.TestCase):
 
     def test_R08_outside_pilot(self):
         with self.assertRaises(ApiError) as ctx:
-            self.svc.compare({"corridorId": CORRIDOR, "origin": [77.10, 28.55], "destination": [77.20, 28.60]})
+            self.svc.compare({"corridorId": CORRIDOR, "origin": [76.5, 28.0], "destination": [77.20, 28.60]})
         self.assertEqual(ctx.exception.code, "OUTSIDE_PILOT_COVERAGE")
         ok = self.svc.compare({"corridorId": CORRIDOR, "origin": self.pair["origin"]["coordinates"],
                                "destination": self.pair["destination"]["coordinates"]})
