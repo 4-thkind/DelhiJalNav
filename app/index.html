@@ -11,7 +11,7 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16x16.png" />
     <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
-    <title>DilliJalNav Edge</title>
+    <title>DilliJalNav</title>
   </head>
   <body>
     <!-- ================= PLANNER: map-first (no permissions needed) ================= -->
@@ -21,7 +21,7 @@
       <header class="topbar">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">DJ</span>
-          <span class="brand-name">DilliJalNav <span>Edge</span></span>
+          <span class="brand-name">DilliJalNav</span>
         </div>
         <div class="chips" aria-live="polite">
           <span id="mode-badge" class="chip">…</span>
@@ -84,7 +84,7 @@
           <div id="vehicle-row" class="vehicle-row" role="group" aria-label="Vehicle"></div>
           <div class="od" role="group" aria-label="Start and destination">
             <div class="od-fields">
-              <div class="od-row"><span class="od-key od-from">From</span><button id="od-from" class="od-field" type="button">…</button></div>
+              <div class="od-row"><span class="od-key od-from">From</span><button id="od-from" class="od-field" type="button">…</button><button id="od-gps" class="od-gps" type="button" aria-label="Use my current location as start" title="Use my current location">◎ GPS</button></div>
               <div class="od-row"><span class="od-key od-to">To</span><button id="od-to" class="od-field" type="button">…</button></div>
             </div>
             <button id="od-swap" class="od-swap secondary" type="button" aria-label="Swap start and destination">⇅</button>
@@ -119,7 +119,7 @@
       <div class="overlay-panel welcome">
         <div class="brand big">
           <span class="brand-mark" aria-hidden="true">DJ</span>
-          <span class="brand-name">DilliJalNav <span>Edge</span></span>
+          <span class="brand-name">DilliJalNav</span>
         </div>
         <h2>How are you travelling today?</h2>
         <p class="muted">We use this to pick your vehicle and how routes are explained. You can change it any time.</p>
@@ -139,7 +139,7 @@
       <div class="overlay-panel">
         <h2 id="place-title">Change destination</h2>
         <form id="place-form" class="place-form" role="search">
-          <input id="place-q" type="search" placeholder="Search a place near Connaught Place" autocomplete="off" maxlength="100" />
+          <input id="place-q" type="search" placeholder="Search a place in Delhi" autocomplete="off" maxlength="100" />
           <button class="primary" type="submit">Search</button>
         </form>
         <div class="actions">
@@ -148,9 +148,9 @@
         </div>
         <p id="place-status" class="fineprint" aria-live="polite"></p>
         <ul id="place-results" class="place-results"></ul>
-        <h3>Landmarks in the pilot area</h3>
+        <h3>Popular places</h3>
         <div id="place-landmarks" class="place-landmarks"></div>
-        <p class="fineprint">Search covers 8 km around the Minto Bridge pilot. Place data © OpenStreetMap contributors (Nominatim).</p>
+        <p class="fineprint">Search covers Delhi: start typing a place, area, metro station or landmark. Place data © OpenStreetMap contributors (Photon, Nominatim).</p>
         <button id="place-back" class="secondary" type="button" data-i18n="back">Back</button>
       </div>
     </section>
@@ -281,7 +281,10 @@
         <p id="ride-water" class="ride-water" hidden></p>
         <p id="gps-status" class="gps-status" hidden role="alert"></p>
         <p id="pocket-note" class="pocket-note" hidden>Pocket mode · camera off · voice turn-by-turn and flood-zone warnings · keep earphones in</p>
-        <div id="ride-map" class="ride-map"></div>
+        <div class="ride-map-wrap">
+          <div id="ride-map" class="ride-map"></div>
+          <button id="ride-recenter" class="ride-recenter" type="button" hidden>Re-centre on me</button>
+        </div>
       </div>
 
       <div class="hud-bottom">
