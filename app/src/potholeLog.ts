@@ -4,7 +4,7 @@
  * estimate along the heading, so it is approximate (tens of metres). Never
  * uploaded unless the rider turns on sharing in settings.
  */
-const KEY = "dillijalnav.potholes";
+const KEY = "margsetu.potholes";
 const MAX = 200;
 /** Two sightings closer than this are the same pothole. */
 export const SAME_POTHOLE_M = 12;
@@ -48,6 +48,43 @@ export function logPothole(list: LoggedPothole[], p: LoggedPothole): LoggedPotho
     : [...list, p].slice(-MAX);
   try {
     localStorage.setItem(KEY, JSON.stringify(next));
+  } catch {
+    /* storage full or blocked: this session still shows it */
+  }
+  return next;
+}
+
+// ---------------------------------------------------------------- camera water sightings
+const WATER_KEY = "margsetu.water";
+/** Waterlogging drains within hours, so a camera sighting fades after this. */
+export const WATER_TTL_MS = 6 * 3_600_000;
+/** Two sightings closer than this are the same waterlogged spot. */
+export const SAME_WATER_M = 40;
+
+export interface LoggedWater {
+  at: [number, number];
+  seen: number;
+}
+
+export function loadWater(now = Date.now()): LoggedWater[] {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(WATER_KEY) ?? "[]");
+    return Array.isArray(raw)
+      ? raw.filter((w): w is LoggedWater =>
+          Array.isArray(w?.at) && w.at.length === 2 && w.at.every(Number.isFinite) && now - w.seen < WATER_TTL_MS)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Add a camera water sighting (merged with one nearby); expired ones are dropped. */
+export function logWater(list: LoggedWater[], w: LoggedWater): LoggedWater[] {
+  const live = list.filter((q) => w.seen - q.seen < WATER_TTL_MS);
+  const near = live.find((q) => metresBetween(q.at, w.at) < SAME_WATER_M);
+  const next = near ? live.map((q) => (q === near ? { ...q, seen: w.seen } : q)) : [...live, w].slice(-100);
+  try {
+    localStorage.setItem(WATER_KEY, JSON.stringify(next));
   } catch {
     /* storage full or blocked: this session still shows it */
   }
