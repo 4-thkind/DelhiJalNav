@@ -70,9 +70,10 @@ export const api = {
   evidence: (hotspotId: string) => request<EvidenceView>("GET", `/v1/hotspots/${encodeURIComponent(hotspotId)}/evidence`),
   compare: (req: CompareRequest) => request<RouteDecision>("POST", "/v1/routes/compare", { corridorId: CORRIDOR_ID, ...req }),
   weather: () => request<Weather>("GET", "/v1/weather"),
-  geocode: (q: string) =>
+  /** `near` ranks results close to the user first. */
+  geocode: (q: string, near?: [number, number]) =>
     request<{ results: { name: string; address: string; coordinates: [number, number] }[]; attribution: string }>(
-      "GET", `/v1/geocode?q=${encodeURIComponent(q)}`),
+      "GET", `/v1/geocode?q=${encodeURIComponent(q)}${near ? `&near=${near[0]},${near[1]}` : ""}`),
   draft: (text: string, contributor: string) =>
     request<ReportDraft>("POST", "/v1/report-drafts", { text }, { "x-demo-contributor": contributor }),
   submit: (body: ObservationRequest, contributor: string) =>
