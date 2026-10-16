@@ -101,7 +101,7 @@ def route(svc: Service, event: dict) -> tuple[int, dict]:
     if method == "POST" and path == "/v1/report-drafts":
         return 200, svc.report_draft(_body(event), svc.principal_from(headers, claims))
     if method == "GET" and path == "/v1/geocode":
-        return 200, svc.geocode(query.get("q"))
+        return 200, svc.geocode(query.get("q"), query.get("near"))
     if method == "GET" and path == "/v1/weather":
         return 200, svc.weather()
     if method == "POST" and path == "/v1/demo/control":

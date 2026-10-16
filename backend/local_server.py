@@ -90,12 +90,20 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("[local] " + (fmt % args) + "\n")
 
 
+class Server(ThreadingHTTPServer):
+    def handle_error(self, request, client_address) -> None:
+        # a browser closing or reloading mid-response is normal; don't print a traceback for it
+        if isinstance(sys.exc_info()[1], (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8787)
     args = ap.parse_args()
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server = Server((args.host, args.port), Handler)
     print(json.dumps({"listening": f"http://{args.host}:{args.port}", "mode": os.environ["APP_MODE"],
                       "staticApp": DIST.is_dir()}))
     server.serve_forever()
