@@ -20,7 +20,7 @@ export interface NetworkHazard extends HazardReport {
 }
 
 const EARTH_R = 6371000;
-const QUEUE_KEY = "dillijalnav.legacyPotholeQueue";
+const QUEUE_KEY = "margsetu.legacyPotholeQueue";
 const LEGACY_QUEUE_KEY = "pathfinder.queue";
 const rad = (d: number) => (d * Math.PI) / 180;
 
