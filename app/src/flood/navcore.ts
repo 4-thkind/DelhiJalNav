@@ -125,8 +125,10 @@ export interface Fix {
   t: number;
 }
 
-/** Fixes worse than this are not used for guidance at all. */
+/** Fixes worse than this are flagged as weak (dimmed avatar, weak-GPS badge). */
 export const MAX_USABLE_ACCURACY_M = 100;
+/** Fixes worse than this are not used for guidance at all. Laptops on Wi-Fi location sit around 100-200 m. */
+export const MAX_GUIDANCE_ACCURACY_M = 300;
 /** Process noise: how far a rider can plausibly move between fixes, (m/s)^2 per second. */
 const MOTION_VAR_PER_S = 36;
 
