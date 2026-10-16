@@ -145,7 +145,7 @@ export class MemoryStorage implements OutboxStorage {
 export class IdbStorage implements OutboxStorage {
   private db: Promise<IDBDatabase>;
   private storeName: string;
-  constructor(name = "dillijalnav-edge", storeName = "outbox") {
+  constructor(name = "margsetu", storeName = "outbox") {
     this.storeName = storeName;
     this.db = new Promise((resolve, reject) => {
       const open = indexedDB.open(name, 1);
