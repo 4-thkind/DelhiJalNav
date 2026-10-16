@@ -160,7 +160,7 @@ export const REASON_LABEL: Record<string, Record<Lang, string>> = {
 
 let lang: Lang = "en";
 try {
-  if (localStorage.getItem("dillijalnav.lang") === "hi") lang = "hi";
+  if (localStorage.getItem("margsetu.lang") === "hi") lang = "hi";
 } catch {
   /* storage blocked: default English */
 }
@@ -171,7 +171,7 @@ export function setLang(next: Lang): void {
   lang = next;
   document.documentElement.lang = next;
   try {
-    localStorage.setItem("dillijalnav.lang", next);
+    localStorage.setItem("margsetu.lang", next);
   } catch {
     /* not fatal */
   }
