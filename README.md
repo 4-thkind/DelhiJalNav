@@ -1,14 +1,14 @@
-# DilliJalNav Edge
+# DilliJalNav
 
 **Recent water reports. Better route decisions.**
 
-Every monsoon, Delhi's underpasses flood within an hour, and navigation apps still send riders straight into them. Maps know traffic. They don't know water. DilliJalNav Edge checks your route against fresh waterlogging reports from people on the ground, avoids the flooded underpass, tells you exactly what the detour costs, and explains why.
+Every monsoon, Delhi's underpasses flood within an hour, and navigation apps still send riders straight into them. Maps know traffic. They don't know water. DilliJalNav checks your route against fresh waterlogging reports from people on the ground, avoids the flooded underpass, tells you exactly what the detour costs, and explains why.
 
-![DilliJalNav Edge: route planner with a flood-checked route on the map and a live ride view approaching a waterlogged underpass](assets/dillijalnav-hero.jpg)
+![DilliJalNav: route planner with a flood-checked route on the map and a live ride view approaching a waterlogged underpass](assets/margsetu-hero.jpg)
 
 **Live on AWS:** https://d3vchw4bg3abh4.cloudfront.net (`aws-demo` mode, synthetic reports)
 
-**Theme:** Track 02, Heat and Water. Climate change is making Delhi's monsoon rain shorter, heavier and harder to predict, and the city's drains were not built for it. DilliJalNav Edge works on the water side of that problem. It focuses on the moment when climate turns into an everyday safety risk for millions of two-wheeler riders, auto drivers and commuters.
+**Theme:** Track 02, Heat and Water. Climate change is making Delhi's monsoon rain shorter, heavier and harder to predict, and the city's drains were not built for it. DilliJalNav works on the water side of that problem. It focuses on the moment when climate turns into an everyday safety risk for millions of two-wheeler riders, auto drivers and commuters.
 
 ---
 
@@ -38,7 +38,7 @@ Every year the same photo comes out of Delhi: a bus standing in brown water up t
 
 That rider did not choose to drive into a flood. Their map sent them there. Mainstream navigation is excellent at traffic and has no idea about water. The people standing near the underpass *can see it is flooded*. That knowledge simply never reaches the rider two kilometres away.
 
-DilliJalNav Edge closes that gap. It does that with three commitments:
+DilliJalNav closes that gap. It does that with three commitments:
 
 1. **Get ground truth into the route.** Reports from people nearby change the route of people on the way.
 2. **Never fake certainty.** Reports are claims, not measurements. The app shows the evidence and says what it does not know.
@@ -321,7 +321,7 @@ aws login --region ap-southeast-2            # browser sign-in, no access keys o
 
 cd backend
 sam build --use-container                    # builds Linux arm64 wheels
-sam deploy --guided --stack-name dillijalnav-edge --region ap-southeast-2 \
+sam deploy --guided --stack-name margsetu --region ap-southeast-2 \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides DemoAdminKey=<16+ random chars> PseudonymSalt=<16+ random chars> \
     BuildId=$(git rev-parse --short HEAD) \
@@ -340,7 +340,7 @@ Notes:
 - **Region:** use the Region your account or project lives in. A mismatch shows up as an expired sign-in in the browser.
 - **Bedrock model:** use a model or inference profile that is enabled in your account and Region. New accounts may need verification to finish first. Leave it empty for rules-only drafting. Check `method: "bedrock"` in a `/v1/report-drafts` response.
 - **Google Maps key:** if you restrict the browser key by HTTP referrer, add your CloudFront domain.
-- **Teardown:** `aws s3 rm s3://<SiteBucketName> --recursive`, then `sam delete --stack-name dillijalnav-edge`. Confirm the stack name first.
+- **Teardown:** `aws s3 rm s3://<SiteBucketName> --recursive`, then `sam delete --stack-name margsetu`. Confirm the stack name first.
 
 `live-pilot` mode (real community reports) is implemented in the handler. It requires a JWT `sub` for writes and a `reviewers` group for reviews. The template ships `aws-demo` only, until the write routes have a Cognito JWT authorizer.
 
@@ -351,7 +351,7 @@ Notes:
 | `python -m unittest discover -s backend/tests -v` | 58 tests: evidence scenarios (E01 to E18, R01 to R10, S01 to S04), the handler, DynamoDB transaction shape and cancellation handling, Hinglish extraction (positive, negated, ambiguous), the Bedrock breaker (timeout, hallucinated place, invented depth), the dynamic bypass, depth and stalled claims, weather | 58/58 pass |
 | `cd app && npm run check` | Camera alert engine, outbox retries / single-flight / sign-in hold, navigation core (position along route, next maneuver, hazard-segment clipping), water and depth heuristics | pass |
 | `python scripts/demo.py --api <url> smoke` | Golden journey over HTTP: idempotency, `409`, corroboration, route switch, 6 concurrent writes, anonymous write rejected, stale, provider failure | **12/12 pass on the live AWS deployment** |
-| `node scripts/e2e-browser.mjs C:/djn-e2e` | Real headless Chrome with a fake camera and fake GPS at 360 px: report → review → submit, corroboration, route switch, evidence drawer, XSS-safe text, Hindi, offline reload, offline queue, polling reroute, Hinglish auto-fill, ride with camera, Pocket mode, car layout | pass locally |
+| `node scripts/e2e-browser.mjs C:/margsetu-e2e` | Real headless Chrome with a fake camera and fake GPS at 360 px: report → review → submit, corroboration, route switch, evidence drawer, XSS-safe text, Hindi, offline reload, offline queue, polling reroute, Hinglish auto-fill, ride with camera, Pocket mode, car layout | pass locally |
 
 Mutation checks were also run. Breaking the corroboration threshold, the line/polygon test or the outbox single-flight makes the tests fail.
 
