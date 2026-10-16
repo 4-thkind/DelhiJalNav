@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  DilliJalNav Edge - evidence-aware monsoon route advisories (AWS demo stack).
+  DilliJalNav - evidence-aware monsoon route advisories (AWS demo stack).
   CloudFront serves the PWA from a private S3 bucket and forwards /v1/* to an
   HTTP API backed by one Lambda function and one DynamoDB table.
 
@@ -282,7 +282,7 @@ Resources:
     Properties:
       DistributionConfig:
         Enabled: true
-        Comment: DilliJalNav Edge
+        Comment: DilliJalNav
         DefaultRootObject: index.html
         HttpVersion: http2
         PriceClass: PriceClass_200
