@@ -31,6 +31,15 @@ const kerb = waterFromLogits(logits((x) => x < 2), C, H, W, HORIZON);
 assert.equal(kerb.fraction, 0, "water at the frame edge, outside the road region, does not count");
 assert.ok(WATER_CLASSES.includes(21) && WATER_CLASSES.includes(26));
 
+// muddy waterlogging: "road" wins every pixel, but water is a strong second (p ~ 0.24) - still water
+const muddy = new Float32Array(C * H * W);
+for (let i = 0; i < H * W; i++) { muddy[6 * H * W + i] = 5.6; muddy[21 * H * W + i] = 4.9; }
+assert.ok(waterFromLogits(muddy, C, H, W, HORIZON).fraction > 0.9, "water as a strong second class counts");
+// a faint water hint (p ~ 0.035) on a dry road does not
+const faint = new Float32Array(C * H * W);
+for (let i = 0; i < H * W; i++) { faint[6 * H * W + i] = 6; faint[21 * H * W + i] = 3; }
+assert.equal(waterFromLogits(faint, C, H, W, HORIZON).fraction, 0, "a faint water hint is not water");
+
 const gate = new WaterGate();
 assert.equal(gate.update(0.4, 0), false, "one run is not enough");
 assert.equal(gate.update(0.05, 500), false);
