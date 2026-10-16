@@ -64,6 +64,19 @@ for (let i = 0; i < 3; i++) step([a]);
 const second = [step([a, other]), step([a, other]), step([a, other])].flat();
 assert.equal(second.length, 0, "cooldown suppresses back-to-back announcements");
 
+// hysteresis: a weak box never starts a track, but keeps a confirmed one alive
+engine.reset();
+t = 0;
+for (let i = 0; i < 5; i++) step([box(0.3, 0.7, 0.3)]);
+const weakOnly = engine.active.length; // a local: asserting on engine.active.length would narrow its type below
+assert.equal(weakOnly, 0, "boxes below minScore never start a track");
+engine.reset();
+t = 0;
+for (let i = 0; i < 3; i++) step([box(0.5, 0.55, 0.8)]);
+const id = engine.active[0].id;
+for (let i = 0; i < 8; i++) step([box(0.5, 0.55, 0.3)]); // blurred at speed: weaker, but the same pothole
+assert.equal(engine.active[0]?.id, id, "a weak box keeps the confirmed track (not lost, not re-announced)");
+
 // peripheral hazards are tracked but never announced
 engine.reset();
 const kerb = box(0.05, 0.9);

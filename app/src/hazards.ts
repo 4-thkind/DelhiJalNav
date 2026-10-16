@@ -27,8 +27,14 @@ export interface CameraModel {
 export const DEFAULT_CAMERA: CameraModel = { heightM: 1.0, vFovDeg: 55, horizonFrac: 0.45 };
 
 export interface TunableConfig {
-  /** Minimum detector confidence to even consider a box. */
+  /** Minimum detector confidence for a box to start a new track. */
   minScore: number;
+  /**
+   * Lower confidence that still keeps an existing track alive (hysteresis): a pothole
+   * blurs or shrinks for a frame or two at speed, and should not be lost and re-found.
+   * Never starts a track, so it adds no new false alarms on its own.
+   */
+  keepScore: number;
   /** Consecutive-ish frames a track must be seen before it can raise an alert. */
   minHits: number;
   /** Frames a track survives without a match before it is dropped. */
@@ -47,6 +53,7 @@ export interface TunableConfig {
 
 export const DEFAULT_CONFIG: TunableConfig = {
   minScore: 0.4,
+  keepScore: 0.25,
   minHits: 3,
   maxMisses: 5,
   warnSeconds: 3.5,
@@ -181,7 +188,8 @@ export class AlertEngine {
   update(dets: Detection[], frameW: number, frameH: number, speedMps: number, now: number): Alert[] {
     const unmatched = new Set(this.tracks);
 
-    for (const det of dets) {
+    // strongest boxes claim tracks first
+    for (const det of [...dets].sort((a, b) => b.score - a.score)) {
       let best: Track | undefined;
       let bestIou = IOU_MATCH;
       for (const track of unmatched) {
@@ -198,7 +206,7 @@ export class AlertEngine {
         best.hits++;
         best.misses = 0;
         best.lastSeen = now;
-      } else {
+      } else if (det.score >= this.cfg.minScore) {
         this.tracks.push({
           id: this.nextId++,
           cls: det.cls,
