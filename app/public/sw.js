@@ -4,7 +4,7 @@
  * bulk-cached (OSM tile policy). Cache-first for the shell, the wasm runtime
  * and the model. Once installed, a ride works with no connection at all.
  */
-const CACHE = "dillijalnav-edge-v2";
+const CACHE = "margsetu-v2";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
