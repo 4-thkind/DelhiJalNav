@@ -43,13 +43,13 @@ import { along, arrow, cumulative, formatDistance, haversine, nextStep, segmentI
 import { locateBest } from "./locate.ts";
 import { voice } from "../alerts.ts";
 import { floodSpiral, potholePing } from "../map/markers.ts";
-import { loadPotholes } from "../potholeLog.ts";
+import { loadPotholes, loadWater } from "../potholeLog.ts";
 import { createMap, type HtmlMarker, type Layer, type MapView } from "../map/mapview.ts";
 import { openStorage, Outbox, type Outcome } from "./queue.ts";
 
-const CACHE_KEY = "dillijalnav.snapshot.v2";
-const PREFS_KEY = "dillijalnav.prefs";
-const CONTRIBUTOR_KEY = "dillijalnav.demoContributor";
+const CACHE_KEY = "margsetu.snapshot.v2";
+const PREFS_KEY = "margsetu.prefs";
+const CONTRIBUTOR_KEY = "margsetu.demoContributor";
 const MAX_BACKOFF_MS = 60_000;
 /** Simulated drive runs this many times faster than the OSRM estimate. Labelled in the UI. */
 const SIM_SPEEDUP = 6;
@@ -142,13 +142,15 @@ const s = {
   weather: undefined as Weather | undefined,
   decisionNote: "",
   decisionStale: false,
-  offline: false,
+  offline: !navigator.onLine,
   lastSync: undefined as number | undefined,
   skewMs: 0,
   fingerprint: "",
   compareSeq: 0,
   pollDelay: 15_000,
   pairId: "",
+  /** True only after "Preset route": the reviewed pilot pair. Otherwise start = GPS, destination = the user's pick. */
+  preset: false,
   origin: undefined as [number, number] | undefined,
   destination: undefined as [number, number] | undefined,
   originName: "",
@@ -186,6 +188,12 @@ let tagLayer: Layer;
 let puck: HtmlMarker | undefined;
 let puckEl: HTMLElement | undefined;
 let fittedFor = "";
+let meDot: HtmlMarker | undefined;
+let lastFix: { at: [number, number]; accuracyM: number; t: number } | undefined;
+/** The start is the automatic GPS fix (not picked by the user), so a better fix may replace it. */
+let autoOrigin = false;
+let autoAccuracyM = Infinity;
+let centredOnMe = false;
 
 const serverNow = () => Date.now() + s.skewMs;
 
@@ -315,7 +323,7 @@ function renderTop(): void {
     badge.className = "chip chip-offline";
   } else {
     badge.textContent = s.status?.modeLabel ?? "…";
-    badge.className = "chip " + (s.status?.clientMode === "LIVE_PILOT" ? "chip-live" : "chip-demo");
+    badge.className = "chip chip-live";
   }
   const demo = s.status?.demo;
   $("demo-clock").textContent = demo && demo.clockOffsetMinutes ? `Demo clock +${demo.clockOffsetMinutes} min` : "";
@@ -358,6 +366,8 @@ function renderMap(): void {
 
   // potholes this phone's camera logged on earlier rides
   for (const p of loadPotholes()) tagLayer.pin(p.at, potholePing(p.depthM ? `Pothole · ~${p.depthM.toFixed(2)} m` : "Pothole", p.severe));
+  // water this phone's camera saw in the last few hours (dashed spiral: "possible", not a report)
+  for (const w of loadWater()) tagLayer.pin(w.at, floodSpiral("Possible water · camera", "camera"));
 
   const d = s.decision;
   if (d) {
@@ -399,6 +409,7 @@ function renderMap(): void {
       placePuck(c[0], c.length > 1 ? (along(c, cumulative(c), 1).heading) : 0, active.steps[0]?.name || active.roadNames[0] || "");
     }
   }
+  if (puckEl) puckEl.style.display = d || s.nav.active ? "" : "none";
 }
 
 function renderVehicles(): void {
@@ -498,7 +509,15 @@ function renderRoutes(): void {
   const list = $("route-cards");
   list.replaceChildren();
   const d = s.decision;
-  if (!d) return;
+  const pair = s.preset ? s.view?.pairs[0] : undefined;
+  $("od-from").textContent = s.originName || pair?.origin.name || "Getting your location…";
+  $("od-to").textContent = s.destName || pair?.destination.name || "Choose destination";
+  $("btn-preset").hidden = s.preset && !s.origin && !s.destination;
+  $("btn-demo-water").hidden = !s.status?.demo || !s.preset;
+  if (!d) {
+    $<HTMLButtonElement>("btn-nav").disabled = !s.nav.active;
+    return;
+  }
   const active = activeRoute();
   for (const r of [...d.routes].sort((a, b) => a.durationS - b.durationS)) {
     const chosen = r.id === d.selectedRouteId;
@@ -515,11 +534,6 @@ function renderRoutes(): void {
         reasons ? h("span", { class: "reason" }, reasons) : null),
     );
   }
-  const pair = s.view?.pairs[0];
-  $("od-from").textContent = s.originName || pair?.origin.name || "…";
-  $("od-to").textContent = s.destName || pair?.destination.name || "…";
-  $("btn-preset").hidden = !s.origin && !s.destination;
-  $("btn-demo-water").hidden = !s.status?.demo;
   const pickBanner = $("pick-banner");
   pickBanner.hidden = !s.pickMode;
   $("pick-text").textContent = s.pickMode === "from" ? t("tapStartHint") : t("tapHint");
@@ -630,11 +644,9 @@ function compareRequest(): CompareRequest {
   const vehicle = s.prefs.vehicle;
   const avoid = liveAvoid();
   const extra = { lang: getLang(), ...(avoid.length ? { avoid } : {}) };
-  if (s.origin || s.destination) {
-    const pair = s.view?.pairs[0];
-    return { origin: s.origin ?? pair?.origin.coordinates, destination: s.destination ?? pair?.destination.coordinates, vehicle, ...extra };
-  }
-  return { routePairId: s.pairId, vehicle, ...extra };
+  if (s.preset && !s.origin && !s.destination) return { routePairId: s.pairId, vehicle, ...extra };
+  const pair = s.preset ? s.view?.pairs[0] : undefined;
+  return { origin: s.origin ?? pair?.origin.coordinates, destination: s.destination ?? pair?.destination.coordinates, vehicle, ...extra };
 }
 
 /**
@@ -667,7 +679,16 @@ function demoCameraWater(): void {
 }
 
 async function compare(note?: string): Promise<void> {
-  if (!s.pairId && !s.destination && !s.origin) return;
+  if (!s.preset && !(s.origin && s.destination)) {
+    // no route until both ends are real: start from GPS, destination from the user
+    if (s.offline && s.decision) return renderAll(); // offline: keep the saved route on screen
+    s.compareSeq++;
+    s.decision = undefined;
+    s.decisionStale = false;
+    s.decisionNote = s.origin ? "Choose your destination: tap To." : "Allow location, or tap the GPS button, to set your start.";
+    renderAll();
+    return;
+  }
   const seq = ++s.compareSeq;
   $("update-note").textContent = note ?? "";
   try {
@@ -1023,12 +1044,12 @@ async function shareTrip(): Promise<void> {
   const r = activeRoute();
   const hz = hazard();
   const eta = r ? new Date(serverNow() + r.durationS * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
-  const text = `DilliJalNav Edge: I'm taking "${r?.label ?? "my route"}", ETA ${eta}.` +
+  const text = `DilliJalNav: I'm taking "${r?.label ?? "my route"}", ETA ${eta}.` +
     (hz?.restricts ? ` ${hz.displayName}: ${pick(STATE_LABEL, hz.state)} - avoiding it.` : "") +
     ` (${s.status?.modeLabel ?? ""})`;
   if (navigator.share) {
     try {
-      await navigator.share({ title: "DilliJalNav Edge", text, url: location.origin });
+      await navigator.share({ title: "DilliJalNav", text, url: location.origin });
       return;
     } catch {
       /* cancelled: fall through to WhatsApp */
@@ -1067,7 +1088,16 @@ function applyLanguage(): void {
 }
 
 function setEnd(which: "from" | "to", point: [number, number], name: string): void {
+  if (s.preset) {
+    // leaving the preset: the other end comes from GPS, not from the pilot pair
+    s.preset = false;
+    s.origin = lastFix?.at;
+    s.originName = lastFix ? fixName(lastFix.accuracyM) : "";
+    s.destination = undefined;
+    s.destName = "";
+  }
   if (which === "from") {
+    autoOrigin = false;
     s.origin = point;
     s.originName = name;
   } else {
@@ -1096,19 +1126,27 @@ function openPlace(which: "from" | "to"): void {
   setTimeout(() => $<HTMLInputElement>("place-q").focus(), 50);
 }
 
-async function searchPlace(): Promise<void> {
+let searchSeq = 0;
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Place search; `typing` is the as-you-type suggestion run (debounced by the caller). */
+async function searchPlace(typing = false): Promise<void> {
+  clearTimeout(searchTimer);
   const q = $<HTMLInputElement>("place-q").value.trim();
   const status = $("place-status");
   const list = $("place-results");
-  list.replaceChildren();
-  if (q.length < 2) {
-    status.textContent = "Type at least 2 letters.";
+  const seq = ++searchSeq;
+  if (q.length < (typing ? 3 : 2)) {
+    list.replaceChildren();
+    status.textContent = typing ? "" : "Type at least 2 letters.";
     return;
   }
   status.textContent = "Searching…";
   try {
-    const { results } = await api.geocode(q);
-    status.textContent = results.length ? "" : `No match within ${((s.view?.pilotRadiusM ?? 8000) / 1000).toFixed(0)} km of the pilot. Try a landmark or pick on the map.`;
+    const { results } = await api.geocode(q, lastFix?.at ?? s.origin);
+    if (seq !== searchSeq) return; // a newer search is in flight
+    list.replaceChildren();
+    status.textContent = results.length ? "" : "No match in Delhi. Try another name, or pick the point on the map.";
     for (const r of results) {
       const li = h("li", {}, h("b", {}, r.name), h("span", { class: "muted" }, r.address));
       li.tabIndex = 0;
@@ -1118,7 +1156,7 @@ async function searchPlace(): Promise<void> {
       list.append(li);
     }
   } catch (err) {
-    status.textContent = (err as ApiFailure).message;
+    if (seq === searchSeq) status.textContent = (err as ApiFailure).message;
   }
 }
 
@@ -1135,6 +1173,79 @@ async function useMyLocation(): Promise<void> {
     setEnd(which, [fix.lon, fix.lat], `My location (±${Math.round(fix.accuracyM)} m)`);
   } catch (err) {
     status.textContent = (err as Error).message;
+  }
+}
+
+function fixName(accuracyM: number): string {
+  return `My location (±${accuracyM >= 1000 ? (accuracyM / 1000).toFixed(1) + " km" : Math.round(accuracyM) + " m"})`;
+}
+
+function showMe(at: [number, number]): void {
+  if (!map) return;
+  if (!meDot) {
+    const el = document.createElement("div");
+    el.className = "me-dot";
+    el.title = "You are here";
+    meDot = map.marker(at, el);
+  } else meDot.move(at);
+}
+
+/** Make a GPS fix the start, unless the user already picked a start themselves. */
+function startFromFix(fix: { at: [number, number]; accuracyM: number }, force: boolean): void {
+  lastFix = { ...fix, t: Date.now() };
+  showMe(fix.at);
+  if (s.nav.active || s.preset) return;
+  if (!force && s.origin && !autoOrigin) return;
+  // a better automatic fix replaces the start only when it is clearly better (no route churn on GPS jitter)
+  if (!force && autoOrigin && s.origin && fix.accuracyM > 0.5 * autoAccuracyM) return;
+  s.origin = fix.at;
+  s.originName = fixName(fix.accuracyM);
+  autoOrigin = !force;
+  autoAccuracyM = fix.accuracyM;
+  if (!s.destination && map && (force || !centredOnMe)) {
+    centredOnMe = true;
+    map.view(fix.at, 15);
+  }
+  fittedFor = "";
+  void compare();
+}
+
+/** Live "you are here" dot; the first fix becomes the start point. */
+function watchMe(): void {
+  if (!("geolocation" in navigator) || !isSecureContext) {
+    $("update-note").textContent = "Location needs HTTPS. Open the app from the QR link to use GPS.";
+    return;
+  }
+  navigator.geolocation.watchPosition(
+    (p) => startFromFix({ at: [p.coords.longitude, p.coords.latitude], accuracyM: p.coords.accuracy }, false),
+    (err) => {
+      if (err.code === err.PERMISSION_DENIED) $("update-note").textContent = "Location is blocked. Allow it in the browser to start from where you are.";
+    },
+    { enableHighAccuracy: true, maximumAge: 10_000 },
+  );
+}
+
+/** The GPS button: take a fresh, accurate fix now and make it the start. */
+async function gpsStart(): Promise<void> {
+  const note = $("update-note");
+  const use = (fix: { at: [number, number]; accuracyM: number }) => {
+    if (s.preset) {
+      s.preset = false;
+      s.destination = undefined;
+      s.destName = "";
+    }
+    startFromFix(fix, true);
+    note.textContent = fix.accuracyM > 150 ? `Start set, but GPS is weak (±${Math.round(fix.accuracyM)} m). Go outdoors for a better fix.` : "";
+  };
+  // the live watch already has a fresh, accurate fix: use it at once
+  if (lastFix && Date.now() - lastFix.t < 15_000 && lastFix.accuracyM <= 20) return use(lastFix);
+  note.textContent = "Getting an accurate GPS fix…";
+  try {
+    const fix = await locateBest((acc) => (note.textContent = `Getting an accurate GPS fix… ±${Math.round(acc)} m so far`));
+    use({ at: [fix.lon, fix.lat], accuracyM: fix.accuracyM });
+  } catch (err) {
+    if (lastFix) use(lastFix); // no fresh fix in time: the last live one is better than none
+    else note.textContent = (err as Error).message;
   }
 }
 
@@ -1219,14 +1330,18 @@ export async function initPlanner(screens: { show: (name: string) => void; start
   $("od-from").addEventListener("click", () => openPlace("from"));
   $("od-to").addEventListener("click", () => openPlace("to"));
   $("od-swap").addEventListener("click", () => {
-    const pair = s.view?.pairs[0];
+    const pair = s.preset ? s.view?.pairs[0] : undefined;
     const [o, on] = [s.origin ?? pair?.origin.coordinates, s.originName || pair?.origin.name || ""];
     const [d, dn] = [s.destination ?? pair?.destination.coordinates, s.destName || pair?.destination.name || ""];
     [s.origin, s.originName, s.destination, s.destName] = [d, dn, o, on];
+    s.preset = false;
+    autoOrigin = false;
     fittedFor = "";
     void compare();
   });
   $("btn-preset").addEventListener("click", () => {
+    s.preset = true;
+    autoOrigin = false;
     s.avoid = [];
     s.origin = s.destination = undefined;
     s.originName = s.destName = "";
@@ -1234,11 +1349,16 @@ export async function initPlanner(screens: { show: (name: string) => void; start
     fittedFor = "";
     void compare();
   });
+  $("place-q").addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => void searchPlace(true), 400);
+  });
   $("place-form").addEventListener("submit", (e) => {
     e.preventDefault();
     void searchPlace();
   });
   $("place-mine").addEventListener("click", () => void useMyLocation());
+  $("od-gps").addEventListener("click", () => void gpsStart());
   $("place-pick").addEventListener("click", () => {
     s.pickMode = s.editing;
     show("planner");
@@ -1319,6 +1439,7 @@ export async function initPlanner(screens: { show: (name: string) => void; start
   fillHotspots();
   if (!s.prefs.role) show("welcome");
   await Promise.all([mapReady, refresh(true)]);
+  watchMe();
   fillHotspots();
   planListener?.(ridePlan());
   await flushQueue();
