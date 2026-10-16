@@ -12,7 +12,7 @@ import urllib.request
 
 OSRM = "https://router.project-osrm.org/route/v1/driving"
 OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
-UA = "DilliJalNav-Edge/0.3 (hackathon prototype)"
+UA = "DilliJalNav/0.3 (prototype)"
 
 
 class ProviderError(Exception):
@@ -152,6 +152,54 @@ def nominatim(q: str, centre: list[float], half_deg: float = 0.075, timeout: flo
         except (KeyError, ValueError):
             continue
     _geo_cache[key] = (time.time(), results)
+    return results
+
+
+PHOTON = "https://photon.komoot.io/api/"
+#: Words people add that OSM names leave out ("Rithala metro station" is mapped as "Rithala").
+GENERIC_WORDS = {"metro", "station", "stn", "railway", "rly", "bus", "stop", "depot", "terminal"}
+PLACE_KIND = {
+    ("railway", "station"): "Metro / rail station", ("railway", "halt"): "Rail halt", ("railway", "stop"): "Station",
+    ("public_transport", "station"): "Station", ("amenity", "bus_station"): "Bus terminal",
+    ("highway", "bus_stop"): "Bus stop", ("place", "suburb"): "Area", ("place", "neighbourhood"): "Neighbourhood",
+}
+_photon_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
+def photon(q: str, near: list[float], bbox: tuple[float, float, float, float], timeout: float = 4.0) -> list[dict]:
+    """Typo-tolerant place search (Photon, OSM data) biased to `near`. Also retries without
+    generic words like "metro station", and then lists stations first. Cached for a day."""
+    words = q.strip().lower().replace("sec ", "sector ").split()
+    key = " ".join(words) + f"@{near[0]:.2f},{near[1]:.2f}"
+    hit = _photon_cache.get(key)
+    if hit and time.time() - hit[0] < 86_400:
+        return hit[1]
+    core = [w for w in words if w not in GENERIC_WORDS]
+    wants_station = 0 < len(core) < len(words)
+    queries = [" ".join(words)] + ([" ".join(core)] if wants_station else [])
+    results: list[dict] = []
+    for query in queries:
+        params = urllib.parse.urlencode({"q": query, "lon": near[0], "lat": near[1], "limit": 8,
+                                         "bbox": ",".join(str(v) for v in bbox)})
+        data = _get(f"{PHOTON}?{params}", timeout)
+        for f in data.get("features", []) if isinstance(data, dict) else []:
+            try:
+                p = f["properties"]
+                lon, lat = f["geometry"]["coordinates"]
+                name = p.get("name") or p.get("street")
+                if not name:
+                    continue
+                kind = PLACE_KIND.get((p.get("osm_key"), p.get("osm_value")), "")
+                where = ", ".join(x for x in (p.get("locality"), p.get("district"), p.get("city") or p.get("county")) if x)
+                results.append({"name": name, "address": " · ".join(x for x in (kind, where) if x)[:120],
+                                "coordinates": [round(float(lon), 6), round(float(lat), 6)], "station": bool(kind and "tation" in kind)})
+            except (KeyError, TypeError, ValueError):
+                continue
+    if wants_station:
+        results.sort(key=lambda r: not r["station"])  # stable: keeps Photon's relevance order within each group
+    for r in results:
+        del r["station"]
+    _photon_cache[key] = (time.time(), results)
     return results
 
 

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 from domain import routes as route_domain
-from domain.geometry import distance_m, line_intersects_polygon, point_in_polygon
+from domain.geometry import DELHI_BBOX, distance_m, line_intersects_polygon, point_in_polygon
 from domain.policy import POLICY_VERSION, Policy, check_clear_review, evaluate, iso
 from domain.validation import ApiError, payload_hash, validate_observation
 from providers import bedrock, external
@@ -23,9 +23,9 @@ from storage.local import DuplicateEvent, RevisionConflict
 DATA_DIR = Path(__file__).resolve().parent / "data"
 MODES = {
     # APP_MODE: (namespace, clientMode, provenance, label)
-    "local-demo": ("demo-local", "LOCAL_DEMO", "SYNTHETIC_DEMO", "Demo · synthetic reports"),
-    "aws-demo": ("demo-aws", "AWS_DEMO", "SYNTHETIC_DEMO", "AWS demo · synthetic reports"),
-    "live-pilot": ("pilot", "LIVE_PILOT", "LIVE_USER_REPORT", "Pilot · community reports"),
+    "local-demo": ("demo-local", "LOCAL_DEMO", "SYNTHETIC_DEMO", "Live"),
+    "aws-demo": ("demo-aws", "AWS_DEMO", "SYNTHETIC_DEMO", "Live"),
+    "live-pilot": ("pilot", "LIVE_PILOT", "LIVE_USER_REPORT", "Live"),
 }
 DEMO_CONTRIBUTOR_RE = re.compile(r"^demo-[a-z0-9-]{1,32}$")
 #: Evidence lookback for a read. Far longer than freshness, so stale/conflict context survives.
@@ -34,7 +34,7 @@ RATE_PER_MINUTE = 10
 RATE_PER_DAY = 100
 MAX_REVISION_RETRIES = 3
 #: Dynamic (tap-anywhere) routing is limited to this radius around the pilot hotspot.
-PILOT_RADIUS_M = 8_000
+PILOT_RADIUS_M = 40_000
 VEHICLES = ("two_wheeler", "auto", "car", "suv", "ev")
 DEPTH_ORDER = {"ankle": 1, "knee": 2, "waist": 3, "submerged": 4}
 #: Hourly model rainfall at or above this (mm) shows a context advisory. Never a restriction.
@@ -387,13 +387,26 @@ class Service:
         result["inPilot"] = result["location_matched"] in self.hotspot_ids
         return result
 
-    def geocode(self, q: str | None) -> dict:
-        """Search-on-submit place lookup, bounded to the pilot area (never autocomplete)."""
+    def geocode(self, q: str | None, near: str | None = None) -> dict:
+        """Place lookup inside the coverage area: Photon (typo-tolerant, ranked near the user),
+        Nominatim when Photon is down or finds nothing."""
         if not isinstance(q, str) or not 2 <= len(q.strip()) <= 100:
             raise ApiError(422, "QUERY_REQUIRED", "Search for 2-100 characters.")
         centre = self.hotspots[0]["properties"]["centroid"]
+        bias = centre
         try:
-            found = external.nominatim(q.strip(), centre)
+            lon, lat = (float(v) for v in (near or "").split(","))
+            if distance_m(centre, [lon, lat]) <= PILOT_RADIUS_M:
+                bias = [lon, lat]
+        except ValueError:
+            pass
+        found: list[dict] = []
+        try:
+            found = external.photon(q.strip(), bias, DELHI_BBOX)
+        except external.ProviderError:
+            pass
+        try:
+            found = found or external.nominatim(q.strip(), centre, half_deg=PILOT_RADIUS_M / 100_000)
         except external.ProviderError:
             raise ApiError(503, "GEOCODER_UNAVAILABLE", "Place search is unavailable. Pick on the map instead.", True) from None
         results: list[dict] = []
